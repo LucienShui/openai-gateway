@@ -40,7 +40,7 @@ async def lifespan(_: FastAPI):
                     created=int(time.time())
                 ))
 
-    token_list.extend(os.environ["TOKEN_LIST"].split(","))
+    token_list.extend(os.environ["API_KEY_LIST"].split(","))
     yield
 
 
