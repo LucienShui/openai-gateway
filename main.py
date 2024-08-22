@@ -15,11 +15,12 @@ from openai.types.model import Model
 from sse_starlette.sse import EventSourceResponse
 
 from openai_gateway.config import Config, API
+from openai_gateway.entity import ModelList
 from openai_gateway.logger import get_logger
 
 client_dict: Dict[str, Dict[str, AsyncOpenAI]] = {}
 token_list: List[str] = []
-model_list: List[Model] = []
+model_list: ModelList = ModelList()
 logger = get_logger(__name__)
 
 
@@ -35,9 +36,11 @@ async def lifespan(_: FastAPI):
                 else:
                     client_dict.setdefault(namespace, {})[model] = AsyncOpenAI(api_key=api.api_key,
                                                                                base_url=api.base_url)
-                model_list.append(Model(
+                model_list.data.append(Model(
                     id="/".join(([namespace] if namespace != "default" else []) + [model]),
-                    created=int(time.time())
+                    created=int(time.time()),
+                    owned_by=namespace,
+                    object="model"
                 ))
 
     token_list.extend(os.environ["API_KEY_LIST"].split(","))
@@ -125,7 +128,7 @@ async def create_chat_completion(request: dict, authorization: Annotated[str | N
 
 
 @app.get("/v1/models")
-async def get_models(authorization: Annotated[str | None, Header()]) -> List[Model]:
+async def get_models(authorization: Annotated[str | None, Header()]) -> ModelList:
     if not (get_token(authorization) in token_list):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return model_list
