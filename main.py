@@ -131,6 +131,11 @@ async def get_models(authorization: Annotated[str | None, Header()]) -> List[Mod
     return model_list
 
 
+@app.get("/health")
+async def health() -> Response:
+    return Response(status_code=200)
+
+
 def main():
     uvicorn.run(
         'main:app',
