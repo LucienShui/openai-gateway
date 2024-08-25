@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class API(BaseModel):
-    model_list: List[str] = Field(description="List of supported models")
+    models: List[str] = Field(description="List of supported models")
     api_key: str = Field(description="OpenAI API key")
     base_url: str = Field(description="OpenAI API base url")
 

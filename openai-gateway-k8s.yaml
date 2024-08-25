@@ -10,13 +10,13 @@ metadata:
   namespace: openai-gateway
 data:
   WORKERS: "4"
-  API_KEY_LIST: "key1,key2"
+  API_KEYS: "key1,key2"
   CONFIG: |
     {
       "config": {
         "default": [
           {
-            "model_list": [
+            "models": [
               "gpt-4",
               "gpt-4-32k",
               "gpt-4-turbo",
@@ -29,7 +29,7 @@ data:
             "base_url": "https://api.openai.com/v1"
           },
           {
-            "model_list": [
+            "models": [
               "deepseek-chat",
               "deepseek-coder"
             ],
@@ -40,7 +40,7 @@ data:
       },
       "azure": [
         {
-          "model_list": [
+          "models": [
             "gpt-4o",
             "gpt-4o-mini"
           ],
@@ -76,7 +76,7 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
-          command: ["python3", "main.py"]
+          command: [ "python3", "main.py" ]
           volumeMounts:
             - name: log-dir
               mountPath: /app/logs
@@ -101,7 +101,7 @@ spec:
           resources:
             requests:
               cpu: 128m
-              memory: 256Mi 
+              memory: 256Mi
             limits:
               cpu: "1"
               memory: 2Gi

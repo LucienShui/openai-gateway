@@ -8,18 +8,18 @@ services:
     ports:
       - "${PORT:-8000}:${PORT:-8000}"
     restart: always
-    entrypoint: ["python3", "main.py"]
+    entrypoint: [ "python3", "main.py" ]
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:${PORT:-8000}/health || exit 1"]
+      test: [ "CMD-SHELL", "curl -f http://localhost:${PORT:-8000}/health || exit 1" ]
     environment:
       WORKERS: "4"
-      API_KEY_LIST: "key1,key2"
+      API_KEYS: "key1,key2"
       CONFIG: |
         {
           "config": {
             "default": [
               {
-                "model_list": [
+                "models": [
                   "gpt-4",
                   "gpt-4-32k",
                   "gpt-4-turbo",
@@ -32,7 +32,7 @@ services:
                 "base_url": "https://api.openai.com/v1"
               },
               {
-                "model_list": [
+                "models": [
                   "deepseek-chat",
                   "deepseek-coder"
                 ],
@@ -43,7 +43,7 @@ services:
           },
           "azure": [
             {
-              "model_list": [
+              "models": [
                 "gpt-4o",
                 "gpt-4o-mini"
               ],

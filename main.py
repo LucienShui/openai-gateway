@@ -1,7 +1,7 @@
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Dict, Annotated, AsyncIterable, List, Tuple, Optional
+from typing import Dict, Annotated, AsyncIterable, List, Tuple, Optional, Callable
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status, Header
@@ -11,6 +11,7 @@ from openai import AsyncOpenAI
 from openai.lib.azure import AsyncAzureOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+from openai.types.completion import Completion
 from openai.types.model import Model
 from sse_starlette.sse import EventSourceResponse
 
@@ -18,9 +19,9 @@ from openai_gateway.config import Config, API
 from openai_gateway.entity import ModelList
 from openai_gateway.logger import get_logger
 
-client_dict: Dict[str, Dict[str, AsyncOpenAI]] = {}
+ns_dict: Dict[str, Dict[str, AsyncOpenAI]] = {}
 token_list: List[str] = []
-model_list: ModelList = ModelList()
+model_list: ModelList = ModelList()  # Response of /v1/models
 logger = get_logger(__name__)
 
 
@@ -29,13 +30,12 @@ async def lifespan(_: FastAPI):
     config: Dict[str, List[API]] = Config.model_validate_json(os.environ["CONFIG"]).config
     for namespace, api_list in config.items():
         for api in api_list:
-            for model in api.model_list:
+            for model in api.models:
                 if api.is_azure:
-                    client_dict.setdefault(namespace, {})[model] = AsyncAzureOpenAI(
+                    ns_dict.setdefault(namespace, {})[model] = AsyncAzureOpenAI(
                         azure_endpoint=api.base_url, api_version=api.api_version, api_key=api.api_key)
                 else:
-                    client_dict.setdefault(namespace, {})[model] = AsyncOpenAI(api_key=api.api_key,
-                                                                               base_url=api.base_url)
+                    ns_dict.setdefault(namespace, {})[model] = AsyncOpenAI(api_key=api.api_key, base_url=api.base_url)
                 model_list.data.append(Model(
                     id="/".join(([namespace] if namespace != "default" else []) + [model]),
                     created=int(time.time()),
@@ -43,7 +43,7 @@ async def lifespan(_: FastAPI):
                     object="model"
                 ))
 
-    token_list.extend(os.environ["API_KEY_LIST"].split(","))
+    token_list.extend(os.environ["API_KEYS"].split(","))
     yield
 
 
@@ -63,7 +63,8 @@ async def exception_handler(_: Request, e: Exception) -> Response:
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
-            "error": f"{e.__class__.__name__}: {str(e)}",
+            "exception_class": e.__class__.__name__,
+            "exception_message": str(e),
             "status": 500
         }
     )
@@ -76,15 +77,19 @@ async def get_namespace_and_model(key: str) -> Tuple[str, str]:
     return "default", key
 
 
-async def stream(request: dict) -> AsyncIterable[str]:
-    namespace, model = await get_namespace_and_model(request["model"])
+async def stream(func: Callable, request: dict, model: str, api: str) -> AsyncIterable[str]:
     response = ""
-    chunk: ChatCompletionChunk = ...
+    chunk: Completion | ChatCompletionChunk = ...
     start_time = time.time()
-    async for chunk in await client_dict[namespace][model].chat.completions.create(**{**request, "model": model}):
+    async for chunk in await func(**(request | {"model": model})):
         yield chunk.model_dump_json()
         try:
-            response += chunk.choices[0].delta.content or ""
+            if isinstance(chunk, Completion):
+                response += chunk.choices[0].text
+            elif isinstance(chunk, ChatCompletionChunk):
+                response += chunk.choices[0].delta.content or ""
+            else:
+                raise Exception("Unknown chunk type")
         except Exception as e:
             logger.exception({
                 **request,
@@ -92,12 +97,24 @@ async def stream(request: dict) -> AsyncIterable[str]:
                 "exception_message": str(e)
             })
     logger.info({
-        "api": "/v1/chat/completions",
+        "api": api,
         "request": request,
         "response": response,
         "chunk": None if chunk is ... else chunk.model_dump(),
         "time": round(time.time() - start_time, 3)
     })
+
+
+async def generate(func: Callable, request: dict, model: str, api: str) -> ChatCompletion | Completion:
+    start_time = time.time()
+    response: ChatCompletion | Completion = await func(**(request | {"model": model}))
+    logger.info({
+        "api": api,
+        "request": request,
+        "response": response.model_dump(),
+        "time": round(time.time() - start_time, 3)
+    })
+    return response
 
 
 def get_token(authorization: str) -> Optional[str]:
@@ -107,24 +124,27 @@ def get_token(authorization: str) -> Optional[str]:
     return None
 
 
-@app.post("/v1/chat/completions")
-async def create_chat_completion(request: dict, authorization: Annotated[str | None, Header()]):
+async def get_client(request: dict, authorization: str) -> Tuple[str, AsyncOpenAI]:
     if not (get_token(authorization) in token_list):
         raise HTTPException(status_code=401, detail="Invalid API key")
+    namespace, model = await get_namespace_and_model(request["model"])
+    if client_dict := ns_dict.get(namespace, {}):
+        if client := client_dict.get(model, None):
+            return model, client
+        raise HTTPException(status_code=404, detail="Model not found")
+    raise HTTPException(status_code=404, detail="Namespace not found")
+
+
+@app.post("/v1/completions")
+@app.post("/v1/chat/completions")
+async def chat_completions(request: dict, authorization: Annotated[str | None, Header()], raw_request: Request):
+    model, client = await get_client(request, authorization)
+    api = raw_request.url.path
+    create_func = (client.chat.completions if "chat" in api else client.completions).create
+    args = (create_func, request, model, api)
     if request.get("stream", False):
-        return EventSourceResponse(stream(request), media_type="text/event-stream")
-    else:
-        start_time = time.time()
-        namespace, model = await get_namespace_and_model(request["model"])
-        params = {**request, "model": model}
-        response: ChatCompletion = await client_dict[namespace][model].chat.completions.create(**params)
-        logger.info({
-            "api": "/v1/chat/completions",
-            "request": request,
-            "response": response.model_dump(),
-            "time": round(time.time() - start_time, 3)
-        })
-        return response
+        return EventSourceResponse(stream(*args), media_type="text/event-stream")
+    return generate(*args)
 
 
 @app.get("/v1/models")
