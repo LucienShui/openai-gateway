@@ -3,16 +3,54 @@ services:
     image: lucienshui/openai-gateway:latest
     container_name: openai-gateway
     volumes:
-      - ${PWD}/logs:/app/logs
+      - ${LOG_DIR:-${PWD}/logs}:/app/logs
       - /etc/localtime:/etc/localtime:ro
-    working_dir: /app
     ports:
       - "${PORT:-8000}:${PORT:-8000}"
     restart: always
     entrypoint: ["python3", "main.py"]
-    environment:
-      CONFIG: '{"config":{"default":[{"model_list":["gpt-4o","gpt-4o-mini"],"api_key":"***","base_url":"https://api.openai.com/v1"}]}}'
-      API_KEY_LIST: "key1,key2"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:${PORT:-8000}/health || exit 1"]
-
+    environment:
+      WORKERS: "4"
+      API_KEY_LIST: "key1,key2"
+      CONFIG: |
+        {
+          "config": {
+            "default": [
+              {
+                "model_list": [
+                  "gpt-4",
+                  "gpt-4-32k",
+                  "gpt-4-turbo",
+                  "gpt-4o",
+                  "gpt-4o-mini",
+                  "gpt-3.5-turbo",
+                  "gpt-3.5-turbo-16k"
+                ],
+                "api_key": "***",
+                "base_url": "https://api.openai.com/v1"
+              },
+              {
+                "model_list": [
+                  "deepseek-chat",
+                  "deepseek-coder"
+                ],
+                "api_key": "***",
+                "base_url": "https://api.deepseek.com/v1"
+              }
+            ]
+          },
+          "azure": [
+            {
+              "model_list": [
+                "gpt-4o",
+                "gpt-4o-mini"
+              ],
+              "api_key": "***",
+              "base_url": "https://***.openai.azure.com/",
+              "api_version": "2024-02-15-preview",
+              "is_azure": true
+            }
+          ]
+        }

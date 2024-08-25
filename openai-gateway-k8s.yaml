@@ -1,0 +1,130 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openai-gateway
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openai-gateway-config
+  namespace: openai-gateway
+data:
+  WORKERS: "4"
+  API_KEY_LIST: "key1,key2"
+  CONFIG: |
+    {
+      "config": {
+        "default": [
+          {
+            "model_list": [
+              "gpt-4",
+              "gpt-4-32k",
+              "gpt-4-turbo",
+              "gpt-4o",
+              "gpt-4o-mini",
+              "gpt-3.5-turbo",
+              "gpt-3.5-turbo-16k"
+            ],
+            "api_key": "***",
+            "base_url": "https://api.openai.com/v1"
+          },
+          {
+            "model_list": [
+              "deepseek-chat",
+              "deepseek-coder"
+            ],
+            "api_key": "***",
+            "base_url": "https://api.deepseek.com/v1"
+          }
+        ]
+      },
+      "azure": [
+        {
+          "model_list": [
+            "gpt-4o",
+            "gpt-4o-mini"
+          ],
+          "api_key": "***",
+          "base_url": "https://***.openai.azure.com/",
+          "api_version": "2024-02-15-preview",
+          "is_azure": true
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openai-gateway
+  namespace: openai-gateway
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: openai-gateway
+  template:
+    metadata:
+      labels:
+        app: openai-gateway
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: openai-gateway
+          image: lucienshui/openai-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          command: ["python3", "main.py"]
+          volumeMounts:
+            - name: log-dir
+              mountPath: /app/logs
+              readOnly: false
+            - name: localtime
+              mountPath: /etc/localtime
+              readOnly: true
+          envFrom:
+            - configMapRef:
+                name: openai-gateway-config
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 300
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 128m
+              memory: 256Mi 
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: log-dir
+          hostPath:
+            path: /var/log/openai-gateway
+            type: DirectoryOrCreate
+        - name: localtime
+          hostPath:
+            path: /etc/localtime
+            type: File
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openai-gateway
+  namespace: openai-gateway
+spec:
+  selector:
+    app: openai-gateway
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: LoadBalancer
