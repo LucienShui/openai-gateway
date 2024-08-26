@@ -144,7 +144,7 @@ async def chat_completions(request: dict, authorization: Annotated[str | None, H
     args = (create_func, request, model, api)
     if request.get("stream", False):
         return EventSourceResponse(stream(*args), media_type="text/event-stream")
-    return generate(*args)
+    return await generate(*args)
 
 
 @app.get("/v1/models")
