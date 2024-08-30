@@ -60,6 +60,11 @@ app.add_middleware(
 
 @app.exception_handler(Exception)
 async def exception_handler(_: Request, e: Exception) -> Response:
+    logger.exception({
+        "exception_class": e.__class__.__name__,
+        "exception_message": str(e),
+        "status": 500
+    })
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
