@@ -8,18 +8,17 @@ from fastapi import FastAPI, HTTPException, Request, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
-from openai.lib.azure import AsyncAzureOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.completion import Completion
 from openai.types.model import Model
 from sse_starlette.sse import EventSourceResponse
 
-from openai_gateway.config import Config, API
+from openai_gateway.config import Config
 from openai_gateway.entity import ModelList
 from openai_gateway.logger import get_logger
 
-ns_dict: Dict[str, Dict[str, AsyncOpenAI]] = {}
+route: Dict[str, Dict[str, AsyncOpenAI]] = {}
 token_list: List[str] = []
 model_list: ModelList = ModelList()  # Response of /v1/models
 logger = get_logger(__name__)
@@ -27,15 +26,12 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    config: Dict[str, List[API]] = Config.model_validate_json(os.environ["CONFIG"]).config
-    for namespace, api_list in config.items():
-        for api in api_list:
-            for model in api.models:
-                if api.is_azure:
-                    ns_dict.setdefault(namespace, {})[model] = AsyncAzureOpenAI(
-                        azure_endpoint=api.base_url, api_version=api.api_version, api_key=api.api_key)
-                else:
-                    ns_dict.setdefault(namespace, {})[model] = AsyncOpenAI(api_key=api.api_key, base_url=api.base_url)
+    config = Config.model_validate_json(os.environ["CONFIG"])
+    for namespace, client_config_list in config.namespace.items():
+        for client_config in client_config_list:
+            client = client_config.to_client()
+            for model in client_config.models:
+                route.setdefault(namespace, {})[model] = client
                 model_list.data.append(Model(
                     id="/".join(([namespace] if namespace != "default" else []) + [model]),
                     created=int(time.time()),
@@ -133,7 +129,7 @@ async def get_client(request: dict, authorization: str) -> Tuple[str, AsyncOpenA
     if not (get_token(authorization) in token_list):
         raise HTTPException(status_code=401, detail="Invalid API key")
     namespace, model = await get_namespace_and_model(request["model"])
-    if client_dict := ns_dict.get(namespace, {}):
+    if client_dict := route.get(namespace, {}):
         if client := client_dict.get(model, None):
             return model, client
         raise HTTPException(status_code=404, detail="Model not found")
