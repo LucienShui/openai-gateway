@@ -12,35 +12,34 @@ services:
     healthcheck:
       test: [ "CMD-SHELL", "curl -f http://localhost:${PORT:-8000}/health || exit 1" ]
     environment:
+      PORT: "${PORT:-8000}"
       WORKERS: "4"
       API_KEYS: "key1,key2"
       CONFIG: |
         {
-          "config": {
-            "default": [
-              {
-                "models": [
-                  "gpt-4",
-                  "gpt-4-32k",
-                  "gpt-4-turbo",
-                  "gpt-4o",
-                  "gpt-4o-mini",
-                  "gpt-3.5-turbo",
-                  "gpt-3.5-turbo-16k"
-                ],
-                "api_key": "***",
-                "base_url": "https://api.openai.com/v1"
-              },
-              {
-                "models": [
-                  "deepseek-chat",
-                  "deepseek-coder"
-                ],
-                "api_key": "***",
-                "base_url": "https://api.deepseek.com/v1"
-              }
-            ]
-          },
+          "default": [
+            {
+              "models": [
+                "gpt-4",
+                "gpt-4-32k",
+                "gpt-4-turbo",
+                "gpt-4o",
+                "gpt-4o-mini",
+                "gpt-3.5-turbo",
+                "gpt-3.5-turbo-16k"
+              ],
+              "api_key": "***",
+              "base_url": "https://api.openai.com/v1"
+            },
+            {
+              "models": [
+                "deepseek-chat",
+                "deepseek-coder"
+              ],
+              "api_key": "***",
+              "base_url": "https://api.deepseek.com/v1"
+            }
+          ],
           "azure": [
             {
               "models": [

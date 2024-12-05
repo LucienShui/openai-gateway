@@ -54,7 +54,7 @@ class CustomFileHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         str_log = self.format(record)
         date = datetime.fromtimestamp(record.created)
-        filename = date.strftime('%Y%m%d%H.log')
+        filename = date.strftime('%Y%m%d.log.jsonl')
         with open(os.path.join(self.log_dir, filename), 'a', encoding='utf-8') as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             try:

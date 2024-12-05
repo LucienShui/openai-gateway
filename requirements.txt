@@ -1,5 +1,5 @@
-fastapi~=0.112.1
-uvicorn~=0.30.6
-openai~=1.42.0
-pydantic~=2.8.2
-sse-starlette~=1.6.5
+fastapi~=0.115.6
+uvicorn~=0.32.1
+openai~=1.56.2
+pydantic~=2.10.3
+sse-starlette~=2.1.3

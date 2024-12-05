@@ -11,33 +11,61 @@ from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.completion import Completion
+from openai.types.embedding import Embedding
 from openai.types.model import Model
 from sse_starlette.sse import EventSourceResponse
 
-from openai_gateway.config import Config
+from openai_gateway.config import type_adapter, BaseClientConfig, AliasConfig
 from openai_gateway.entity import ModelList
 from openai_gateway.logger import get_logger
 
-route: Dict[str, Dict[str, AsyncOpenAI]] = {}
+route: Dict[str, Dict[str, Tuple[str, AsyncOpenAI]]] = {}  # namespace, model -> model, client
 token_list: List[str] = []
 model_list: ModelList = ModelList()  # Response of /v1/models
 logger = get_logger(__name__)
 
 
+def get_namespace_and_model(key: str) -> Tuple[str, str]:
+    if "/" in key:
+        namespace, model = key.split("/")
+        return namespace, model
+    return "default", key
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    config = Config.model_validate_json(os.environ["CONFIG"])
-    for namespace, client_config_list in config.namespace.items():
+    config = type_adapter.validate_json(os.environ["CONFIG"])
+
+    config_flatten: Dict[str, Dict[str, BaseClientConfig]] = {}
+
+    for namespace, client_config_list in config.items():
+        vis = []
         for client_config in client_config_list:
-            client = client_config.to_client()
             for model in client_config.models:
-                route.setdefault(namespace, {})[model] = client
-                model_list.data.append(Model(
-                    id="/".join(([namespace] if namespace != "default" else []) + [model]),
-                    created=int(time.time()),
-                    owned_by=namespace,
-                    object="model"
-                ))
+                if model in vis:
+                    raise ValueError(f"Duplicate model name detected: {model}")
+                config_flatten.setdefault(namespace, {})[model] = client_config
+
+    # 将 config 转化为具体的 client
+    for namespace, config_dict in config_flatten.items():
+        for model, config in config_dict.items():
+            vis = []
+            key = model
+            while isinstance(config, AliasConfig):
+                alias = config.alias[model]
+                if alias in vis:
+                    raise ValueError(f"Circular alias detected: {alias}")
+                vis.append(alias)
+
+                _namespace, model = get_namespace_and_model(alias)
+                config = config_flatten[_namespace][model]
+            route.setdefault(namespace, {})[key] = (model, config.to_client())
+            model_list.data.append(Model(
+                id="/".join(([namespace] if namespace != "default" else []) + [model]),
+                created=int(time.time()),
+                owned_by=namespace,
+                object="model"
+            ))
 
     token_list.extend(os.environ["API_KEYS"].split(","))
     yield
@@ -71,13 +99,6 @@ async def exception_handler(_: Request, e: Exception) -> Response:
     )
 
 
-async def get_namespace_and_model(key: str) -> Tuple[str, str]:
-    if "/" in key:
-        namespace, model = key.split("/")
-        return namespace, model
-    return "default", key
-
-
 async def stream(func: Callable, request: dict, model: str, api: str) -> AsyncIterable[str]:
     response = ""
     chunk: Completion | ChatCompletionChunk = ...
@@ -106,9 +127,9 @@ async def stream(func: Callable, request: dict, model: str, api: str) -> AsyncIt
     })
 
 
-async def generate(func: Callable, request: dict, model: str, api: str) -> ChatCompletion | Completion:
+async def generate(func: Callable, request: dict, model: str, api: str) -> ChatCompletion | Completion | Embedding:
     start_time = time.time()
-    response: ChatCompletion | Completion = await func(**(request | {"model": model}))
+    response: ChatCompletion | Completion | Embedding = await func(**(request | {"model": model}))
     logger.info({
         "api": api,
         "request": request,
@@ -128,21 +149,25 @@ def get_token(authorization: str) -> Optional[str]:
 async def get_client(request: dict, authorization: str) -> Tuple[str, AsyncOpenAI]:
     if not (get_token(authorization) in token_list):
         raise HTTPException(status_code=401, detail="Invalid API key")
-    namespace, model = await get_namespace_and_model(request["model"])
+    namespace, model = get_namespace_and_model(request["model"])
     if client_dict := route.get(namespace, {}):
-        if client := client_dict.get(model, None):
-            return model, client
+        if pair := client_dict.get(model, None):
+            return pair
         raise HTTPException(status_code=404, detail="Model not found")
     raise HTTPException(status_code=404, detail="Namespace not found")
 
 
 @app.post("/v1/completions")
 @app.post("/v1/chat/completions")
+@app.post("/v1/embeddings")
 async def chat_completions(request: dict, authorization: Annotated[str | None, Header()], raw_request: Request):
     model, client = await get_client(request, authorization)
     api = raw_request.url.path
-    create_func = (client.chat.completions if "chat" in api else client.completions).create
-    args = (create_func, request, model, api)
+    method = client
+    for each in api.split("/"):
+        if each and each != "v1":
+            method = getattr(method, each)
+    args = (method.create, request, model, api)
     if request.get("stream", False):
         return EventSourceResponse(stream(*args), media_type="text/event-stream")
     return await generate(*args)
