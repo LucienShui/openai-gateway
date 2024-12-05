@@ -19,6 +19,7 @@ services:
         {
           "default": [
             {
+              "type": "openai",
               "models": [
                 "gpt-4",
                 "gpt-4-32k",
@@ -32,6 +33,7 @@ services:
               "base_url": "https://api.openai.com/v1"
             },
             {
+              "type": "openai",
               "models": [
                 "deepseek-chat",
                 "deepseek-coder"
@@ -42,6 +44,7 @@ services:
           ],
           "azure": [
             {
+              "type": "azure",
               "models": [
                 "gpt-4o",
                 "gpt-4o-mini"

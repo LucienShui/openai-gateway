@@ -28,29 +28,35 @@ You can access a specific model with `namespace/model`.
 + `model` will be treated as a passed-by parameter to the provider.
 
 ```json
- {
-  "config": {
-    "default": [
-      {
-        "models": [
-          "gpt-4o",
-          "gpt-4o-mini"
-        ],
-        "api_key": "***",
-        "base_url": "https://api.openai.com/v1"
-      },
-      {
-        "models": [
-          "deepseek-chat",
-          "deepseek-coder"
-        ],
-        "api_key": "***",
-        "base_url": "https://api.deepseek.com/v1"
-      }
-    ]
-  },
+{
+  "default": [
+    {
+      "type": "openai",
+      "models": [
+        "gpt-4",
+        "gpt-4-32k",
+        "gpt-4-turbo",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-3.5-turbo",
+        "gpt-3.5-turbo-16k"
+      ],
+      "api_key": "***",
+      "base_url": "https://api.openai.com/v1"
+    },
+    {
+      "type": "openai",
+      "models": [
+        "deepseek-chat",
+        "deepseek-coder"
+      ],
+      "api_key": "***",
+      "base_url": "https://api.deepseek.com/v1"
+    }
+  ],
   "azure": [
     {
+      "type": "azure",
       "models": [
         "gpt-4o",
         "gpt-4o-mini"

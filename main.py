@@ -61,7 +61,7 @@ async def lifespan(_: FastAPI):
                 config = config_flatten[_namespace][model]
             route.setdefault(namespace, {})[key] = (model, config.to_client())
             model_list.data.append(Model(
-                id="/".join(([namespace] if namespace != "default" else []) + [model]),
+                id="/".join(([namespace] if namespace != "default" else []) + [key]),
                 created=int(time.time()),
                 owned_by=namespace,
                 object="model"
@@ -71,7 +71,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, version="v1.3.1")
 
 app.add_middleware(
     CORSMiddleware,
