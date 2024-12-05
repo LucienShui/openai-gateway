@@ -10,7 +10,7 @@ services:
     restart: always
     entrypoint: [ "python3", "main.py" ]
     healthcheck:
-      test: [ "CMD-SHELL", "curl -f http://localhost:${PORT:-8000}/health || exit 1" ]
+      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:${PORT:-8000}/health || exit 1" ]
     environment:
       PORT: "${PORT:-8000}"
       WORKERS: "4"
