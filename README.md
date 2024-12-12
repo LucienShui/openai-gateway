@@ -10,14 +10,15 @@ Copy [compose.yml](./compose.yml), set ENV variables, then `docker compose up -d
 
 ### Environment variable
 
-| Name     | Default       | Comment                |
-|----------|---------------|------------------------|
-| API_KEYS |               | Format `key1,key2`     |
-| CONFIG   |               | See [CONFIG](#CONFIG)  |
-| WORKERS  | 1             | `uvicorn` worker count |
-| PORT     | 8000          | Set it in `.env`       |
-| LOG_DIR  | `${PWD}/logs` | Set it in `.env`       |
-| HOST     | 0.0.0.0       | Never mind             |
+| Name           | Default       | Comment                               |
+|----------------|---------------|---------------------------------------|
+| API_KEYS       |               | Format `key1,key2`                    |
+| CONFIG         |               | See [CONFIG](#CONFIG)                 |
+| LOGGING_CONFIG | `{}`          | See [LOGGING_CONFIG](#LOGGING_CONFIG) |
+| WORKERS        | 1             | `uvicorn` worker count                |
+| PORT           | 8000          | Set it in `.env`                      |
+| LOG_DIR        | `${PWD}/logs` | Set it in `.env`                      |
+| HOST           | 0.0.0.0       | Never mind                            |
 
 ### CONFIG
 
@@ -67,6 +68,16 @@ You can access a specific model with `namespace/model`.
       "is_azure": true
     }
   ]
+}
+```
+
+### LOGGING_CONFIG
+
+```json
+{
+  "dir": "logs",
+  "pattern": "%Y%m%d.log.jsonl",
+  "keep_count": null
 }
 ```
 
