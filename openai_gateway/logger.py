@@ -4,6 +4,9 @@ import logging
 import os
 import traceback
 from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, Field
 
 
 class CustomFormatter(logging.Formatter):
@@ -46,15 +49,42 @@ class CustomStreamHandler(logging.StreamHandler):
 class CustomFileHandler(logging.Handler):
     terminator = '\n'
 
-    def __init__(self, log_dir: str):
+    def __init__(self, log_dir: str, pattern: str, keep_count: Optional[int] = None):
         super().__init__()
-        self.log_dir: str = log_dir
         self.setFormatter(CustomFormatter())
+
+        self.log_dir: str = log_dir
+        self.pattern: str = pattern
+        self.keep_count: Optional[int] = keep_count
+        self.current_filename: str = ""
+
+    def get_file_date(self, filename: str) -> Optional[datetime]:
+        if filename != self.current_filename and os.path.isfile(os.path.join(self.log_dir, filename)):
+            try:
+                return datetime.strptime(filename, self.pattern)
+            except ValueError:
+                pass
+        return None
+
+    def rollover(self, keep_count: int):
+        rollover_candidates = []
+        for filename in os.listdir(self.log_dir):
+            if date := self.get_file_date(filename):
+                rollover_candidates.append((filename, date))
+        should_rollover = sorted(rollover_candidates, key=lambda pair: pair[1], reverse=True)[keep_count:]
+        for filename, date in should_rollover:
+            try:
+                os.remove(os.path.join(self.log_dir, filename))
+            except FileNotFoundError:
+                pass
 
     def emit(self, record: logging.LogRecord) -> None:
         str_log = self.format(record)
         date = datetime.fromtimestamp(record.created)
-        filename = date.strftime('%Y%m%d.log.jsonl')
+        filename = date.strftime(self.pattern)
+        if self.keep_count is not None and filename != self.current_filename:
+            self.current_filename = filename
+            self.rollover(self.keep_count)
         with open(os.path.join(self.log_dir, filename), 'a', encoding='utf-8') as f:
             fcntl.flock(f, fcntl.LOCK_EX)
             try:
@@ -63,15 +93,21 @@ class CustomFileHandler(logging.Handler):
                 fcntl.flock(f, fcntl.LOCK_UN)
 
 
-LOG_DIR = 'logs'
+class LoggingConfig(BaseModel):
+    dir: str = Field(default="logs")
+    pattern: str = Field(default="%Y%m%d.log.jsonl")
+    keep_count: Optional[int] = Field(default=None)
 
-if not os.path.exists(LOG_DIR):
-    os.mkdir(LOG_DIR)
+
+logging_config = LoggingConfig.model_validate_json(os.getenv("LOGGING_CONFIG", "{}"))
+
+if not os.path.exists(logging_config.dir):
+    os.mkdir(logging_config.dir)
 
 logger: logging.Logger = logging.getLogger('app')
 logger.setLevel(logging.INFO)
 logger.addHandler(CustomStreamHandler())
-logger.addHandler(CustomFileHandler(LOG_DIR))
+logger.addHandler(CustomFileHandler(logging_config.dir, logging_config.pattern, logging_config.keep_count))
 
 
 def get_logger(name: str = None):

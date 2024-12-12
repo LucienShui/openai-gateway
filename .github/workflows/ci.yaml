@@ -19,6 +19,7 @@ jobs:
         with:
           images: |
             lucienshui/openai-gateway
+            ghcr.io/lucienshui/openai-gateway
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -37,6 +38,14 @@ jobs:
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to ghcr.io Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
