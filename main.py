@@ -71,7 +71,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(lifespan=lifespan, version="v1.3.2")
+app = FastAPI(lifespan=lifespan, version="v1.3.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -125,6 +125,7 @@ async def stream(func: Callable, request: dict, model: str, api: str) -> AsyncIt
         "chunk": None if chunk is ... else chunk.model_dump(),
         "time": round(time.time() - start_time, 3)
     })
+    yield "[DONE]"
 
 
 async def generate(func: Callable, request: dict, model: str, api: str) -> ChatCompletion | Completion | Embedding:
