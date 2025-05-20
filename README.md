@@ -64,8 +64,7 @@ You can access a specific model with `namespace/model`.
       ],
       "api_key": "***",
       "base_url": "https://***.openai.azure.com/",
-      "api_version": "2024-02-15-preview",
-      "is_azure": true
+      "api_version": "2024-02-15-preview"
     }
   ]
 }

@@ -1,0 +1,23 @@
+{
+  "default": [
+    {
+      "type": "openai",
+      "models": [
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini"
+      ],
+      "api_key": "***",
+      "base_url": "https://api.openai.com/v1"
+    }
+  ],
+  "openai": [
+    {
+      "type": "openai",
+      "models": [
+        "gpt-4o"
+      ],
+      "api_key": "***",
+      "base_url": "https://api.openai.com/v1"
+    }
+  ]
+}

@@ -1,10 +1,10 @@
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Dict, Annotated, AsyncIterable, List, Tuple, Optional, Callable
+from typing import Dict, Annotated, AsyncIterable, List, Tuple, Callable, Iterable
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, status, Header
+from fastapi import FastAPI, HTTPException, Request, status, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
@@ -15,59 +15,57 @@ from openai.types.embedding import Embedding
 from openai.types.model import Model
 from sse_starlette.sse import EventSourceResponse
 
-from openai_gateway.config import type_adapter, BaseClientConfig, AliasConfig
+from openai_gateway.config import type_adapter, AliasConfig, ClientConfig
 from openai_gateway.entity import ModelList
 from openai_gateway.logger import get_logger
 
-route: Dict[str, Dict[str, Tuple[str, AsyncOpenAI]]] = {}  # namespace, model -> model, client
-token_list: List[str] = []
-model_list: ModelList = ModelList()  # Response of /v1/models
+
+class Config:
+    def __init__(self, config_string: str, api_keys: str):
+        self.config = type_adapter.validate_json(config_string)
+        self.map: Dict[str, Tuple[str, AsyncOpenAI]] = {}
+        self.token_list: List[str] = []
+        self.model_list: ModelList = ModelList()  # Response of /v1/models
+
+        config_flatten_v2: Dict[str, tuple[str, ClientConfig]] = {}
+
+        for namespace, client_config_list in self.config.items():
+            for client_config in client_config_list:
+                if isinstance(client_config, AliasConfig):
+                    models: Iterable[str] = client_config.alias.keys()
+                    alias_list: Iterable[str] = client_config.alias.values()
+                    config_list: Iterable[tuple[str, ClientConfig]] = map(config_flatten_v2.__getitem__, alias_list)
+                else:
+                    models: list[str] = client_config.models
+                    config_list: Iterable[tuple[str, ClientConfig]] = [(m, client_config) for m in models]
+                key_list: Iterable[str] = map(lambda x: self.get_key(namespace, x), models)
+                for k, (m, c) in zip(key_list, config_list):
+                    if k in self.map:
+                        raise ValueError(f"Duplicate model name detected: {k}")
+                    config_flatten_v2[k] = (m, c)
+                    self.map[k] = (m, c.to_client())
+                    self.model_list.data.append(
+                        Model(id=k, created=int(time.time()), owned_by=namespace, object="model")
+                    )
+
+        self.token_list.extend(api_keys.split(","))
+
+    @classmethod
+    def get_key(cls, namespace: str, model: str) -> str:
+        return "/".join(([] if namespace == "default" else [namespace]) + [model])
+
+    def get_client(self, key: str) -> Tuple[str, AsyncOpenAI]:
+        return self.map[key]
+
+
 logger = get_logger(__name__)
-
-
-def get_namespace_and_model(key: str) -> Tuple[str, str]:
-    if "/" in key:
-        namespace, model = key.split("/")
-        return namespace, model
-    return "default", key
+config: Config = ...
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    config = type_adapter.validate_json(os.environ["CONFIG"])
-
-    config_flatten: Dict[str, Dict[str, BaseClientConfig]] = {}
-
-    for namespace, client_config_list in config.items():
-        vis = []
-        for client_config in client_config_list:
-            for model in client_config.models:
-                if model in vis:
-                    raise ValueError(f"Duplicate model name detected: {model}")
-                config_flatten.setdefault(namespace, {})[model] = client_config
-
-    # 将 config 转化为具体的 client
-    for namespace, config_dict in config_flatten.items():
-        for model, config in config_dict.items():
-            vis = []
-            key = model
-            while isinstance(config, AliasConfig):
-                alias = config.alias[model]
-                if alias in vis:
-                    raise ValueError(f"Circular alias detected: {alias}")
-                vis.append(alias)
-
-                _namespace, model = get_namespace_and_model(alias)
-                config = config_flatten[_namespace][model]
-            route.setdefault(namespace, {})[key] = (model, config.to_client())
-            model_list.data.append(Model(
-                id="/".join(([namespace] if namespace != "default" else []) + [key]),
-                created=int(time.time()),
-                owned_by=namespace,
-                object="model"
-            ))
-
-    token_list.extend(os.environ["API_KEYS"].split(","))
+    global config
+    config = Config(os.environ["CONFIG"], os.environ["API_KEYS"])
     yield
 
 
@@ -140,45 +138,40 @@ async def generate(func: Callable, request: dict, model: str, api: str) -> ChatC
     return response
 
 
-def get_token(authorization: str) -> Optional[str]:
-    prefix = 'Bearer '
-    if authorization.startswith(prefix):
-        return authorization.replace(prefix, '')
-    return None
-
-
-async def get_client(request: dict, authorization: str) -> Tuple[str, AsyncOpenAI]:
-    if not (get_token(authorization) in token_list):
+def get_token(authorization: Annotated[str | None, Header()] = None) -> str:
+    if config.token_list:
+        prefix = 'Bearer '
+        if not authorization.startswith(prefix):
+            raise HTTPException(status_code=401, detail="Invalid authorization header")
+        token = authorization.replace(prefix, '')
+        if token in config.token_list:
+            return token
         raise HTTPException(status_code=401, detail="Invalid API key")
-    namespace, model = get_namespace_and_model(request["model"])
-    if client_dict := route.get(namespace, {}):
-        if pair := client_dict.get(model, None):
-            return pair
-        raise HTTPException(status_code=404, detail="Model not found")
-    raise HTTPException(status_code=404, detail="Namespace not found")
 
 
 @app.post("/v1/completions")
 @app.post("/v1/chat/completions")
 @app.post("/v1/embeddings")
-async def chat_completions(request: dict, authorization: Annotated[str | None, Header()], raw_request: Request):
-    model, client = await get_client(request, authorization)
-    api = raw_request.url.path
+@app.post("/v1/responses")
+async def chat_completions(request: Request, _: str = Depends(get_token)):
+    body: dict = await request.json()
+    model, client = config.get_client(body["model"])
+    api = request.url.path
     method = client
     for each in api.split("/"):
         if each and each != "v1":
             method = getattr(method, each)
-    args = (method.create, request, model, api)
-    if request.get("stream", False):
+    args = (method.create, body, model, api)
+    if isinstance(enable_thinking := body.get("extra_body", {}).get("enable_thinking", None), bool):
+        body.setdefault("extra_body", {}).setdefault("chat_template_kwargs", {})["enable_thinking"] = enable_thinking
+    if body.get("stream", False):
         return EventSourceResponse(stream(*args), media_type="text/event-stream")
     return await generate(*args)
 
 
 @app.get("/v1/models")
-async def get_models(authorization: Annotated[str | None, Header()]) -> ModelList:
-    if not (get_token(authorization) in token_list):
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return model_list
+async def get_models(_: str = Depends(get_token)) -> ModelList:
+    return config.model_list
 
 
 @app.get("/health")
