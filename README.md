@@ -63,8 +63,17 @@ You can access a specific model with `namespace/model`.
         "gpt-4o-mini"
       ],
       "api_key": "***",
-      "base_url": "https://***.openai.azure.com/",
+      "azure_endpoint": "https://***.openai.azure.com/",
       "api_version": "2024-02-15-preview"
+    }
+  ],
+  "foo": [
+    {
+      "type": "alias",
+      "alias": {
+        "azure-4o": "azure/gpt-4o",
+        "deepseek": "deepseek-chat"
+      }
     }
   ]
 }
@@ -98,6 +107,15 @@ User defined namespace:
 ```shell
 curl -X POST localhost:8000/v1/chat/completions \
   -d '{"model":"azure/gpt-4o","messages":[{"role":"user","content":"Hello"}]}' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer key2'
+```
+
+Alias model:
+
+```shell
+curl -X POST localhost:8000/v1/chat/completions \
+  -d '{"model":"foo/deepseek","messages":[{"role":"user","content":"Hello"}]}' \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer key2'
 ```
