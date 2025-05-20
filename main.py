@@ -162,8 +162,11 @@ async def chat_completions(request: Request, _: str = Depends(get_token)):
         if each and each != "v1":
             method = getattr(method, each)
     args = (method.create, body, model, api)
-    if isinstance(enable_thinking := body.get("extra_body", {}).get("enable_thinking", None), bool):
-        body.setdefault("extra_body", {}).setdefault("chat_template_kwargs", {})["enable_thinking"] = enable_thinking
+    if "enable_thinking" in body:
+        enable_thinking = body.pop("enable_thinking")
+        extra_body = body.setdefault("extra_body", {})
+        extra_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = enable_thinking
+        extra_body["enable_thinking"] = enable_thinking
     if body.get("stream", False):
         return EventSourceResponse(stream(*args), media_type="text/event-stream")
     return await generate(*args)
