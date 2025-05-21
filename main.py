@@ -17,10 +17,11 @@ from sse_starlette.sse import EventSourceResponse
 from openai_gateway.client_router import ClientRouter
 from openai_gateway.entity import ModelList
 from openai_gateway.logger import get_logger
+from openai_gateway.project_root import get_project_root
 
 logger = get_logger(__name__)
 router: ClientRouter = ...
-with open("pyproject.toml", "rb") as f:
+with open(os.path.join(get_project_root(), "pyproject.toml"), "rb") as f:
     version = tomllib.load(f)["project"]["version"]
 
 
@@ -111,6 +112,30 @@ def get_token(authorization: Annotated[str | None, Header()] = None) -> str:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
+def process_enable_thinking(body: dict) -> dict:
+    x = body.pop("enable_thinking", None)
+    chat_template_kwargs = body.pop("chat_template_kwargs", {})
+    y = chat_template_kwargs.get("enable_thinking", None)
+
+    if chat_template_kwargs:
+        body.setdefault("extra_body", {})["chat_template_kwargs"] = chat_template_kwargs
+
+    if x is None and y is None:
+        return body
+
+    if x is not None or y is not None:
+        if x is None:
+            x = y
+        elif y is None:
+            y = x
+        if x != y:
+            raise HTTPException(status_code=400, detail="enable_thinking must be the same")
+        extra_body = body.setdefault("extra_body", {})
+        extra_body["enable_thinking"] = x
+        extra_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = x
+    return body
+
+
 @app.post("/v1/completions")
 @app.post("/v1/chat/completions")
 @app.post("/v1/embeddings")
@@ -123,12 +148,10 @@ async def chat_completions(request: Request, _: str = Depends(get_token)):
     for each in api.split("/"):
         if each and each != "v1":
             method = getattr(method, each)
+
+    body = process_enable_thinking(body)
+
     args = (method.create, body, model, api)
-    if "enable_thinking" in body:
-        enable_thinking = body.pop("enable_thinking")
-        extra_body = body.setdefault("extra_body", {})
-        extra_body.setdefault("chat_template_kwargs", {})["enable_thinking"] = enable_thinking
-        extra_body["enable_thinking"] = enable_thinking
     if body.get("stream", False):
         return EventSourceResponse(stream(*args), media_type="text/event-stream")
     return await generate(*args)

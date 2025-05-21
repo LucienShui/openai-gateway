@@ -1,12 +1,8 @@
-import os
-
 import pytest
+
+from openai_gateway.project_root import get_project_root
 
 
 @pytest.fixture(scope="function")
 def project_root() -> str:
-    target: str = 'pyproject.toml'
-    path = os.path.dirname(os.path.abspath(__file__))
-    while target not in os.listdir(path):
-        path = os.path.dirname(path)
-    return path
+    return get_project_root()

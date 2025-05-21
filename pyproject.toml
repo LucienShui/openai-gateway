@@ -22,6 +22,7 @@ package-mode = false
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.3.5"
+python-dotenv = "^1.1.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
