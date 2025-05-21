@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from main import Config
+from main import ClientRouter
 from tests.fixture import project_root
 
 
@@ -21,14 +21,14 @@ def test_config(project_root: str, config_file: str, ops: list[dict] | type):
     if isinstance(ops, type):
         assert issubclass(ops, Exception)
         with pytest.raises(ops):
-            Config(config_string, "")
+            ClientRouter(config_string, "")
     else:
-        config = Config(config_string, "")
+        config = ClientRouter(config_string, "")
         for op_dict in ops:
             op: str = op_dict["op"]
             key: str = op_dict["key"]
             value: str = op_dict["value"]
 
             if op == "eq":
-                model, client = config.get_client(key)
+                model, client = config.__getitem__(key)
                 assert model == value

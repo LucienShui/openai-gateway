@@ -1,75 +1,37 @@
 import os
 import time
+import tomllib
 from contextlib import asynccontextmanager
-from typing import Dict, Annotated, AsyncIterable, List, Tuple, Callable, Iterable
+from typing import Annotated, AsyncIterable, Callable
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, status, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
-from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.completion import Completion
 from openai.types.embedding import Embedding
-from openai.types.model import Model
 from sse_starlette.sse import EventSourceResponse
 
-from openai_gateway.config import type_adapter, AliasConfig, ClientConfig
+from openai_gateway.client_router import ClientRouter
 from openai_gateway.entity import ModelList
 from openai_gateway.logger import get_logger
 
-
-class Config:
-    def __init__(self, config_string: str, api_keys: str):
-        self.config = type_adapter.validate_json(config_string)
-        self.map: Dict[str, Tuple[str, AsyncOpenAI]] = {}
-        self.token_list: List[str] = []
-        self.model_list: ModelList = ModelList()  # Response of /v1/models
-
-        config_flatten_v2: Dict[str, tuple[str, ClientConfig]] = {}
-
-        for namespace, client_config_list in self.config.items():
-            for client_config in client_config_list:
-                if isinstance(client_config, AliasConfig):
-                    models: Iterable[str] = client_config.alias.keys()
-                    alias_list: Iterable[str] = client_config.alias.values()
-                    config_list: Iterable[tuple[str, ClientConfig]] = map(config_flatten_v2.__getitem__, alias_list)
-                else:
-                    models: list[str] = client_config.models
-                    config_list: Iterable[tuple[str, ClientConfig]] = [(m, client_config) for m in models]
-                key_list: Iterable[str] = map(lambda x: self.get_key(namespace, x), models)
-                for k, (m, c) in zip(key_list, config_list):
-                    if k in self.map:
-                        raise ValueError(f"Duplicate model name detected: {k}")
-                    config_flatten_v2[k] = (m, c)
-                    self.map[k] = (m, c.to_client())
-                    self.model_list.data.append(
-                        Model(id=k, created=int(time.time()), owned_by=namespace, object="model")
-                    )
-
-        self.token_list.extend(api_keys.split(","))
-
-    @classmethod
-    def get_key(cls, namespace: str, model: str) -> str:
-        return "/".join(([] if namespace == "default" else [namespace]) + [model])
-
-    def get_client(self, key: str) -> Tuple[str, AsyncOpenAI]:
-        return self.map[key]
-
-
 logger = get_logger(__name__)
-config: Config = ...
+router: ClientRouter = ...
+with open("pyproject.toml", "rb") as f:
+    version = tomllib.load(f)["project"]["version"]
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global config
-    config = Config(os.environ["CONFIG"], os.environ["API_KEYS"])
+    global router
+    router = ClientRouter(os.environ["CONFIG"], os.environ["API_KEYS"])
     yield
 
 
-app = FastAPI(lifespan=lifespan, version="v1.4.0")
+app = FastAPI(lifespan=lifespan, version=version)
 
 app.add_middleware(
     CORSMiddleware,
@@ -139,12 +101,12 @@ async def generate(func: Callable, request: dict, model: str, api: str) -> ChatC
 
 
 def get_token(authorization: Annotated[str | None, Header()] = None) -> str:
-    if config.token_list:
+    if router.token_list:
         prefix = 'Bearer '
         if not authorization.startswith(prefix):
             raise HTTPException(status_code=401, detail="Invalid authorization header")
         token = authorization.replace(prefix, '')
-        if token in config.token_list:
+        if token in router.token_list:
             return token
         raise HTTPException(status_code=401, detail="Invalid API key")
 
@@ -155,7 +117,7 @@ def get_token(authorization: Annotated[str | None, Header()] = None) -> str:
 @app.post("/v1/responses")
 async def chat_completions(request: Request, _: str = Depends(get_token)):
     body: dict = await request.json()
-    model, client = config.get_client(body["model"])
+    model, client = router[body["model"]]
     api = request.url.path
     method = client
     for each in api.split("/"):
@@ -174,7 +136,7 @@ async def chat_completions(request: Request, _: str = Depends(get_token)):
 
 @app.get("/v1/models")
 async def get_models(_: str = Depends(get_token)) -> ModelList:
-    return config.model_list
+    return router.model_list
 
 
 @app.get("/health")
