@@ -41,6 +41,18 @@ def test_httpx_client(client: httpx.Client, extra_body: dict):
     print(response)
 
 
+def test_openai_client_stream(client: httpx.Client):
+    o = OpenAI(base_url="/v1", api_key=api_key, http_client=client)
+    m = "model"
+    for chunk in o.chat.completions.create(
+            model=m, messages=[{"role": "user", "content": "Hello!"}], extra_body={"enable_thinking": True}, stream=True
+    ):
+        delta = chunk.choices[0].delta
+        for key in ['content', 'reasoning_content']:
+            if hasattr(delta, key) and (v := getattr(delta, key)):
+                print(v, end="", flush=True)
+
+
 def test_error(client: httpx.Client):
     httpx_response: httpx.Response = client.post("/v1/chat/completions", json={
         "model": "model",

@@ -61,7 +61,8 @@ async def exception_handler(_: Request, e: Exception) -> Response:
 
 
 async def stream(func: Callable, request: dict, model: str, api: str) -> AsyncIterable[str]:
-    response = ""
+    response: str = ""
+    reasoning_content: str | None = None
     chunk: Completion | ChatCompletionChunk = ...
     start_time = time.time()
     async for chunk in await func(**(request | {"model": model})):
@@ -70,7 +71,13 @@ async def stream(func: Callable, request: dict, model: str, api: str) -> AsyncIt
             if isinstance(chunk, Completion):
                 response += chunk.choices[0].text
             elif isinstance(chunk, ChatCompletionChunk):
-                response += chunk.choices[0].delta.content or ""
+                delta = chunk.choices[0].delta
+                for key in ['content', 'reasoning_content']:
+                    if hasattr(delta, key) and (v := getattr(delta, key)):
+                        if key == 'reasoning_content':
+                            reasoning_content = (reasoning_content or "") + v
+                        if key == 'content':
+                            response += v
             else:
                 raise Exception("Unknown chunk type")
         except Exception as e:
@@ -79,13 +86,15 @@ async def stream(func: Callable, request: dict, model: str, api: str) -> AsyncIt
                 "exception_class": e.__class__.__name__,
                 "exception_message": str(e)
             })
-    logger.info({
-        "api": api,
-        "request": request,
-        "response": response,
-        "chunk": None if chunk is ... else chunk.model_dump(),
-        "time": round(time.time() - start_time, 3)
-    })
+    logger.info(
+        {
+            "api": api,
+            "request": request,
+            "response": response,
+            "chunk": None if chunk is ... else chunk.model_dump(),
+            "time": round(time.time() - start_time, 3)
+        } | ({} if reasoning_content is None else {"reasoning_content": reasoning_content})
+    )
     yield "[DONE]"
 
 
