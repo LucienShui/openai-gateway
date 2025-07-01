@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 router: ClientRouter = ...
 with open(os.path.join(get_project_root(), "pyproject.toml"), "rb") as f:
     version = tomllib.load(f)["project"]["version"]
+uptime: float = time.time()
 
 
 @asynccontextmanager
@@ -172,8 +173,11 @@ async def get_models(_: str = Depends(get_token)) -> ModelList:
 
 
 @app.get("/health")
-async def health() -> Response:
-    return Response(status_code=200)
+async def health():
+    return {
+        "uptime": round(time.time() - uptime, 3),
+        "version": version,
+    }
 
 
 def main():
