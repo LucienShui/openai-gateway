@@ -2,12 +2,13 @@ import os
 import time
 import tomllib
 from contextlib import asynccontextmanager
-from typing import Annotated, AsyncIterable, Callable
+from typing import AsyncIterator, Callable, Annotated
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, status, Header, Depends
+from fastapi import FastAPI, HTTPException, Request, status, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from fastapi.security import APIKeyHeader
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.completion import Completion
@@ -18,6 +19,8 @@ from openai_gateway.client_router import ClientRouter
 from openai_gateway.entity import ModelList
 from openai_gateway.logger import get_logger
 from openai_gateway.project_root import get_project_root
+
+GenRes = ChatCompletion | Completion | Embedding
 
 logger = get_logger(__name__)
 router: ClientRouter = ...
@@ -61,7 +64,11 @@ async def exception_handler(_: Request, e: Exception) -> Response:
     )
 
 
-async def stream(func: Callable, request: dict, model: str, api: str) -> AsyncIterable[str]:
+def exclude_none(d: dict) -> dict:
+    return {k: v for k, v in d.items() if v is not None}
+
+
+async def stream(func: Callable, request: dict, model: str, api: str, *, trace_id: str | None) -> AsyncIterator[str]:
     response: str = ""
     reasoning_content: str | None = None
     chunk: Completion | ChatCompletionChunk = ...
@@ -82,36 +89,41 @@ async def stream(func: Callable, request: dict, model: str, api: str) -> AsyncIt
             else:
                 raise Exception("Unknown chunk type")
         except Exception as e:
-            logger.exception({
+            logger.exception(exclude_none({
                 **request,
                 "exception_class": e.__class__.__name__,
-                "exception_message": str(e)
-            })
-    logger.info(
-        {
-            "api": api,
-            "request": request,
-            "response": response,
-            "chunk": None if chunk is ... else chunk.model_dump(),
-            "time": round(time.time() - start_time, 3)
-        } | ({} if reasoning_content is None else {"reasoning_content": reasoning_content})
-    )
+                "exception_message": str(e),
+                "trace_id": trace_id,
+            }))
+    logger.info(exclude_none({
+        "api": api,
+        "request": request,
+        "response": response,
+        "chunk": None if chunk is ... else chunk.model_dump(),
+        "time": round(time.time() - start_time, 3),
+        "reasoning_content": reasoning_content,
+        "trace_id": trace_id,
+    }))
     yield "[DONE]"
 
 
-async def generate(func: Callable, request: dict, model: str, api: str) -> ChatCompletion | Completion | Embedding:
+async def generate(func: Callable, request: dict, model: str, api: str, *, trace_id: str | None) -> GenRes:
     start_time = time.time()
-    response: ChatCompletion | Completion | Embedding = await func(**(request | {"model": model}))
-    logger.info({
+    response: GenRes = await func(**(request | {"model": model}))
+    logger.info(exclude_none({
         "api": api,
         "request": request,
         "response": response.model_dump(),
-        "time": round(time.time() - start_time, 3)
-    })
+        "time": round(time.time() - start_time, 3),
+        "trace_id": trace_id,
+    }))
     return response
 
 
-def get_token(authorization: Annotated[str | None, Header()] = None) -> str:
+api_key_header = APIKeyHeader(name="Authorization")
+
+
+def get_token(authorization: Annotated[str, Depends(api_key_header)]) -> str:
     if router.token_list:
         prefix = 'Bearer '
         if not authorization.startswith(prefix):
@@ -120,6 +132,10 @@ def get_token(authorization: Annotated[str | None, Header()] = None) -> str:
         if token in router.token_list:
             return token
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def get_trace_id(x_trace_id: Annotated[str | None, Header()] = None) -> str | None:
+    return x_trace_id
 
 
 def process_enable_thinking(body: dict) -> dict:
@@ -150,7 +166,11 @@ def process_enable_thinking(body: dict) -> dict:
 @app.post("/v1/chat/completions")
 @app.post("/v1/embeddings")
 @app.post("/v1/responses")
-async def chat_completions(request: Request, _: str = Depends(get_token)):
+async def chat_completions(
+        request: Request,
+        _token: Annotated[str, Depends(get_token)],
+        trace_id: Annotated[str | None, Depends(get_trace_id)],
+):
     body: dict = await request.json()
     model, client = router[body["model"]]
     api = request.url.path
@@ -163,12 +183,12 @@ async def chat_completions(request: Request, _: str = Depends(get_token)):
 
     args = (method.create, body, model, api)
     if body.get("stream", False):
-        return EventSourceResponse(stream(*args), media_type="text/event-stream")
-    return await generate(*args)
+        return EventSourceResponse(stream(*args, trace_id=trace_id), media_type="text/event-stream")
+    return await generate(*args, trace_id=trace_id)
 
 
 @app.get("/v1/models")
-async def get_models(_: str = Depends(get_token)) -> ModelList:
+async def get_models(_token: str = Depends(get_token)) -> ModelList:
     return router.model_list
 
 

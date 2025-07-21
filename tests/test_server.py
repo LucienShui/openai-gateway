@@ -35,7 +35,10 @@ def test_httpx_client(client: httpx.Client, extra_body: dict):
         "model": "model",
         "messages": [{"role": "user", "content": "Hello"}],
         **extra_body
-    }, headers={"Authorization": f"Bearer {api_key}"})
+    }, headers={
+        "Authorization": f"Bearer {api_key}",
+        "X-Trace-ID": "test_trace_id",
+    })
     json_response: dict = httpx_response.json()
     response: str = json_response["choices"][0]["message"]["content"]
     print(response)
@@ -45,7 +48,11 @@ def test_openai_client_stream(client: httpx.Client):
     o = OpenAI(base_url="/v1", api_key=api_key, http_client=client)
     m = "model"
     for chunk in o.chat.completions.create(
-            model=m, messages=[{"role": "user", "content": "Hello!"}], extra_body={"enable_thinking": True}, stream=True
+            model=m,
+            messages=[{"role": "user", "content": "Hello!"}],
+            extra_body={"enable_thinking": True},
+            stream=True,
+            extra_headers={"X-Trace-ID": "test_trace_id"},
     ):
         delta = chunk.choices[0].delta
         for key in ['content', 'reasoning_content']:
