@@ -68,7 +68,7 @@ def exclude_none(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 
-async def stream(func: Callable, request: dict, model: str, api: str, *, trace_id: str | None) -> AsyncIterator[str]:
+async def stream(func: Callable, request: dict, model: str, api: str, *, request_id: str | None) -> AsyncIterator[str]:
     response: str = ""
     reasoning_content: str | None = None
     chunk: Completion | ChatCompletionChunk = ...
@@ -93,7 +93,7 @@ async def stream(func: Callable, request: dict, model: str, api: str, *, trace_i
                 **request,
                 "exception_class": e.__class__.__name__,
                 "exception_message": str(e),
-                "trace_id": trace_id,
+                "request_id": request_id,
             }))
     logger.info(exclude_none({
         "api": api,
@@ -102,12 +102,12 @@ async def stream(func: Callable, request: dict, model: str, api: str, *, trace_i
         "chunk": None if chunk is ... else chunk.model_dump(),
         "time": round(time.time() - start_time, 3),
         "reasoning_content": reasoning_content,
-        "trace_id": trace_id,
+        "request_id": request_id,
     }))
     yield "[DONE]"
 
 
-async def generate(func: Callable, request: dict, model: str, api: str, *, trace_id: str | None) -> GenRes:
+async def generate(func: Callable, request: dict, model: str, api: str, *, request_id: str | None) -> GenRes:
     start_time = time.time()
     response: GenRes = await func(**(request | {"model": model}))
     logger.info(exclude_none({
@@ -115,7 +115,7 @@ async def generate(func: Callable, request: dict, model: str, api: str, *, trace
         "request": request,
         "response": response.model_dump(),
         "time": round(time.time() - start_time, 3),
-        "trace_id": trace_id,
+        "request_id": request_id,
     }))
     return response
 
@@ -134,8 +134,8 @@ def get_token(authorization: Annotated[str, Depends(api_key_header)]) -> str:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-def get_trace_id(x_trace_id: Annotated[str | None, Header()] = None) -> str | None:
-    return x_trace_id
+def get_request_id(x_request_id: Annotated[str | None, Header()] = None) -> str | None:
+    return x_request_id
 
 
 def process_enable_thinking(body: dict) -> dict:
@@ -169,7 +169,7 @@ def process_enable_thinking(body: dict) -> dict:
 async def chat_completions(
         request: Request,
         _token: Annotated[str, Depends(get_token)],
-        trace_id: Annotated[str | None, Depends(get_trace_id)],
+        request_id: Annotated[str | None, Depends(get_request_id)],
 ):
     body: dict = await request.json()
     model, client = router[body["model"]]
@@ -183,8 +183,8 @@ async def chat_completions(
 
     args = (method.create, body, model, api)
     if body.get("stream", False):
-        return EventSourceResponse(stream(*args, trace_id=trace_id), media_type="text/event-stream")
-    return await generate(*args, trace_id=trace_id)
+        return EventSourceResponse(stream(*args, request_id=request_id), media_type="text/event-stream")
+    return await generate(*args, request_id=request_id)
 
 
 @app.get("/v1/models")
