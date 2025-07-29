@@ -1,6 +1,6 @@
 [project]
 name = "openai-gateway"
-version = "1.4.5"
+version = "1.4.6"
 description = "OpenAI Compatible LLM Gateway"
 authors = [
     {name = "Lucien",email = "lucien@lucien.ink"}
