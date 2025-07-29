@@ -94,20 +94,21 @@ class CustomFileHandler(logging.Handler):
 
 
 class LoggingConfig(BaseModel):
+    log_to_file: bool = Field(default=False)
     dir: str = Field(default="logs")
     pattern: str = Field(default="%Y%m%d.log.jsonl")
     keep_count: Optional[int] = Field(default=None)
 
 
-logging_config = LoggingConfig.model_validate_json(os.getenv("LOGGING_CONFIG", "{}"))
-
-if not os.path.exists(logging_config.dir):
-    os.mkdir(logging_config.dir)
-
 logger: logging.Logger = logging.getLogger('app')
 logger.setLevel(logging.INFO)
 logger.addHandler(CustomStreamHandler())
-logger.addHandler(CustomFileHandler(logging_config.dir, logging_config.pattern, logging_config.keep_count))
+
+logging_config = LoggingConfig.model_validate_json(os.getenv("LOGGING_CONFIG", "{}"))
+if logging_config.log_to_file:
+    if not os.path.exists(logging_config.dir):
+        os.mkdir(logging_config.dir)
+    logger.addHandler(CustomFileHandler(logging_config.dir, logging_config.pattern, logging_config.keep_count))
 
 
 def get_logger(name: str = None):
