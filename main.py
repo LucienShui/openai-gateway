@@ -1,7 +1,9 @@
+import json as jsonlib
 import os
 import time
 import tomllib
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import AsyncIterator, Callable, Annotated
 
 import uvicorn
@@ -13,15 +15,19 @@ from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.completion import Completion
 from openai.types.embedding import Embedding
+from opentelemetry import trace
 from sse_starlette.sse import EventSourceResponse
 
 from openai_gateway.client_router import ClientRouter
 from openai_gateway.entity import ModelList
 from openai_gateway.logger import get_logger
 from openai_gateway.project_root import get_project_root
+from openai_gateway.trace import patch_open_telemetry
 
 GenRes = ChatCompletion | Completion | Embedding
 
+json_dumps = partial(jsonlib.dumps, ensure_ascii=False, separators=(",", ":"))
+tracer = trace.get_tracer(__name__)
 logger = get_logger(__name__)
 router: ClientRouter = ...
 with open(os.path.join(get_project_root(), "pyproject.toml"), "rb") as f:
@@ -46,6 +52,9 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", None) is not None:
+    patch_open_telemetry(app)
+
 
 @app.exception_handler(Exception)
 async def exception_handler(_: Request, e: Exception) -> Response:
@@ -69,47 +78,65 @@ def exclude_none(d: dict) -> dict:
 
 
 async def stream(func: Callable, request: dict, model: str, api: str, *, request_id: str | None) -> AsyncIterator[str]:
-    response: str = ""
-    reasoning_content: str | None = None
-    chunk: Completion | ChatCompletionChunk = ...
-    start_time = time.time()
-    async for chunk in await func(**(request | {"model": model})):
-        yield chunk.model_dump_json()
-        try:
-            if isinstance(chunk, Completion):
-                response += chunk.choices[0].text
-            elif isinstance(chunk, ChatCompletionChunk):
-                delta = chunk.choices[0].delta
-                for key in ['content', 'reasoning_content']:
-                    if hasattr(delta, key) and (v := getattr(delta, key)):
-                        if key == 'reasoning_content':
-                            reasoning_content = (reasoning_content or "") + v
-                        if key == 'content':
-                            response += v
-            else:
-                raise Exception("Unknown chunk type")
-        except Exception as e:
-            logger.exception(exclude_none({
-                **request,
-                "exception_class": e.__class__.__name__,
-                "exception_message": str(e),
-                "request_id": request_id,
-            }))
-    logger.info(exclude_none({
-        "api": api,
-        "request": request,
-        "response": response,
-        "chunk": None if chunk is ... else chunk.model_dump(),
-        "time": round(time.time() - start_time, 3),
-        "reasoning_content": reasoning_content,
-        "request_id": request_id,
-    }))
-    yield "[DONE]"
+    with tracer.start_as_current_span("stream") as span:
+        response: str = ""
+        reasoning_content: str | None = None
+        chunk: Completion | ChatCompletionChunk = ...
+        start_time = time.time()
+        async for chunk in await func(**(request | {"model": model})):
+            yield chunk.model_dump_json()
+            try:
+                if isinstance(chunk, Completion):
+                    response += chunk.choices[0].text
+                elif isinstance(chunk, ChatCompletionChunk):
+                    delta = chunk.choices[0].delta
+                    for key in ['content', 'reasoning_content']:
+                        if hasattr(delta, key) and (v := getattr(delta, key)):
+                            if key == 'reasoning_content':
+                                reasoning_content = (reasoning_content or "") + v
+                            if key == 'content':
+                                response += v
+                else:
+                    raise Exception("Unknown chunk type")
+            except Exception as e:
+                logger.exception(exclude_none({
+                    **request,
+                    "exception_class": e.__class__.__name__,
+                    "exception_message": str(e),
+                    "request_id": request_id,
+                }))
+
+        span.set_attributes(exclude_none({
+            "api": api,
+            "request": json_dumps(request),
+            "response": response,
+            "chunk": None if chunk is ... else json_dumps(chunk.model_dump(exclude_none=True)),
+            "reasoning_content": reasoning_content,
+            "request_id": request_id,
+        }))
+        logger.info(exclude_none({
+            "api": api,
+            "request": request,
+            "response": response,
+            "chunk": None if chunk is ... else chunk.model_dump(),
+            "time": round(time.time() - start_time, 3),
+            "reasoning_content": reasoning_content,
+            "request_id": request_id,
+        }))
+        yield "[DONE]"
 
 
+@tracer.start_as_current_span("generate")
 async def generate(func: Callable, request: dict, model: str, api: str, *, request_id: str | None) -> GenRes:
+    span = trace.get_current_span()
     start_time = time.time()
     response: GenRes = await func(**(request | {"model": model}))
+    span.set_attributes(exclude_none({
+        "api": api,
+        "request": json_dumps(request),
+        "response": json_dumps(response.model_dump(exclude_none=True)),
+        "request_id": request_id,
+    }))
     logger.info(exclude_none({
         "api": api,
         "request": request,
@@ -123,7 +150,7 @@ async def generate(func: Callable, request: dict, model: str, api: str, *, reque
 api_key_header = APIKeyHeader(name="Authorization")
 
 
-def get_token(authorization: Annotated[str, Depends(api_key_header)]) -> str:
+def get_token(authorization: Annotated[str, Depends(api_key_header)]) -> str | None:
     if router.token_list:
         prefix = 'Bearer '
         if not authorization.startswith(prefix):
@@ -132,6 +159,7 @@ def get_token(authorization: Annotated[str, Depends(api_key_header)]) -> str:
         if token in router.token_list:
             return token
         raise HTTPException(status_code=401, detail="Invalid API key")
+    return None
 
 
 def get_request_id(x_request_id: Annotated[str | None, Header()] = None) -> str | None:
