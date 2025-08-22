@@ -24,6 +24,11 @@ def patch_open_telemetry(target: FastAPI):
     span_processor = BatchSpanProcessor(otlp_exporter)
 
     trace_provider.add_span_processor(span_processor)
-    trace.set_tracer_provider(trace_provider)
+    
+    # Only set the tracer provider if the default one is still active
+    # This prevents errors when running with multiple workers
+    current_provider = trace.get_tracer_provider()
+    if type(current_provider).__name__ == 'ProxyTracerProvider':
+        trace.set_tracer_provider(trace_provider)
 
     FastAPIInstrumentor.instrument_app(target, excluded_urls="health", exclude_spans=["send"])
