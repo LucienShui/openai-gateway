@@ -11,10 +11,10 @@ from fastapi import FastAPI, HTTPException, Request, status, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader
+from openai.types import CreateEmbeddingResponse
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.completion import Completion
-from openai.types.embedding import Embedding
 from opentelemetry import trace
 from sse_starlette.sse import EventSourceResponse
 
@@ -24,11 +24,11 @@ from openai_gateway.logger import get_logger
 from openai_gateway.project_root import get_project_root
 from openai_gateway.trace import patch_open_telemetry
 
-GenRes = ChatCompletion | Completion | Embedding
+GenRes = ChatCompletion | Completion | CreateEmbeddingResponse
 
 json_dumps = partial(jsonlib.dumps, ensure_ascii=False, separators=(",", ":"))
-tracer = trace.get_tracer(__name__)
-logger = get_logger(__name__)
+tracer = trace.get_tracer("openai-gateway")
+logger = get_logger("openai-gateway")
 router: ClientRouter = ...
 with open(os.path.join(get_project_root(), "pyproject.toml"), "rb") as f:
     version = tomllib.load(f)["project"]["version"]
@@ -131,16 +131,17 @@ async def generate(func: Callable, request: dict, model: str, api: str, *, reque
     span = trace.get_current_span()
     start_time = time.time()
     response: GenRes = await func(**(request | {"model": model}))
+    json_response = response.model_dump(exclude_none=True, mode="json", exclude={"data": {"__all__": {"embedding"}}})
     span.set_attributes(exclude_none({
         "api": api,
         "request": json_dumps(request),
-        "response": json_dumps(response.model_dump(exclude_none=True)),
+        "response": json_dumps(json_response),
         "request_id": request_id,
     }))
     logger.info(exclude_none({
         "api": api,
         "request": request,
-        "response": response.model_dump(),
+        "response": json_response,
         "time": round(time.time() - start_time, 3),
         "request_id": request_id,
     }))
@@ -234,7 +235,7 @@ def main():
         host=os.getenv('HOST', '0.0.0.0'),
         port=int(os.getenv('PORT', '8000')),
         workers=int(os.getenv('WORKERS', '1')),
-        log_level=os.getenv('LOG_LEVEL', 'critical'),
+        log_level=os.getenv('LOG_LEVEL', 'warning'),
     )
 
 
