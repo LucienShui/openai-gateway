@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +17,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 )
+
+type ProxyRequest struct {
+	URL  string          `json:"url"`
+	Body json.RawMessage `json:"body"`
+}
 
 type TextRequest struct {
 	Text string `json:"text"`
@@ -27,6 +35,7 @@ func main() {
 	r.Use(corsMiddleware)
 
 	r.Post("/sse", sseHandler)
+	r.Post("/test", testHandler)
 
 	port := getEnv("PORT", "8000")
 	host := getEnv("HOST", "0.0.0.0")
@@ -60,6 +69,73 @@ func main() {
 }
 
 func sseHandler(w http.ResponseWriter, r *http.Request) {
+	var req ProxyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.URL == "" {
+		http.Error(w, "url is required", http.StatusBadRequest)
+		return
+	}
+
+	// Create upstream request
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), "POST", req.URL, bytes.NewReader(req.Body))
+	if err != nil {
+		http.Error(w, "failed to create upstream request", http.StatusInternalServerError)
+		return
+	}
+
+	// Copy headers from client request to upstream request
+	for key, values := range r.Header {
+		// Skip hop-by-hop headers
+		if key == "Content-Length" || key == "Connection" || key == "Host" {
+			continue
+		}
+		for _, value := range values {
+			upstreamReq.Header.Add(key, value)
+		}
+	}
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	upstreamReq.Header.Set("Accept", "text/event-stream")
+
+	// Make upstream request
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		http.Error(w, "failed to connect to upstream: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Set SSE headers for client response
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Stream response from upstream to client
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err != io.EOF {
+				log.Printf("error reading upstream: %v", err)
+			}
+			break
+		}
+		w.Write(line)
+		flusher.Flush()
+	}
+}
+
+func testHandler(w http.ResponseWriter, r *http.Request) {
 	var req TextRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
