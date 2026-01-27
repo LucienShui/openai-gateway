@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -11,44 +13,23 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
-
-	"github.com/LucienShui/openai-gateway/internal/config"
-	"github.com/LucienShui/openai-gateway/internal/handler"
-	"github.com/LucienShui/openai-gateway/internal/logger"
-	"github.com/LucienShui/openai-gateway/internal/middleware"
 )
 
+type TextRequest struct {
+	Text string `json:"text"`
+}
+
 func main() {
-	configJSON := os.Getenv("CONFIG")
-	apiKeys := os.Getenv("API_KEYS")
-
-	cfg, err := config.NewConfig(configJSON, apiKeys)
-	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
-	}
-
-	appLogger := logger.New(os.Stdout)
-	h := handler.New(cfg, appLogger)
-
 	r := chi.NewRouter()
 
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.RealIP)
 	r.Use(corsMiddleware)
 
-	r.Get("/health", h.Health)
+	r.Post("/sse", sseHandler)
 
-	r.Group(func(r chi.Router) {
-		r.Use(middleware.Auth(cfg))
-		r.Get("/v1/models", h.Models)
-		r.Post("/v1/chat/completions", h.Proxy)
-		r.Post("/v1/completions", h.Proxy)
-		r.Post("/v1/embeddings", h.Proxy)
-		r.Post("/v1/responses", h.Proxy)
-	})
-
-	port := config.GetEnv("PORT", "8000")
-	host := config.GetEnv("HOST", "0.0.0.0")
+	port := getEnv("PORT", "8000")
+	host := getEnv("HOST", "0.0.0.0")
 	addr := host + ":" + port
 
 	srv := &http.Server{
@@ -76,6 +57,40 @@ func main() {
 	}
 
 	log.Println("Server exited")
+}
+
+func sseHandler(w http.ResponseWriter, r *http.Request) {
+	var req TextRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	for _, char := range req.Text {
+		fmt.Fprintf(w, "data: %s\n\n", string(char))
+		flusher.Flush()
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
