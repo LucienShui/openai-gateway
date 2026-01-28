@@ -14,6 +14,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LucienShui/openai-gateway/internal/config"
+	"github.com/LucienShui/openai-gateway/internal/handler"
+	"github.com/LucienShui/openai-gateway/internal/logger"
+	"github.com/LucienShui/openai-gateway/internal/middleware"
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 )
@@ -28,17 +32,36 @@ type TextRequest struct {
 }
 
 func main() {
+	configJSON := os.Getenv("CONFIG")
+	apiKeys := os.Getenv("API_KEYS")
+
+	cfg, err := config.NewConfig(configJSON, apiKeys)
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	lgr := logger.New(os.Stdout)
+	h := handler.New(cfg, lgr)
+
 	r := chi.NewRouter()
 
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.RealIP)
 	r.Use(corsMiddleware)
 
-	r.Post("/sse", sseHandler)
-	r.Post("/test", testHandler)
+	r.Get("/health", h.Health)
 
-	port := getEnv("PORT", "8000")
-	host := getEnv("HOST", "0.0.0.0")
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.Auth(cfg))
+		r.Get("/v1/models", h.Models)
+		r.Post("/v1/completions", h.Proxy)
+		r.Post("/v1/chat/completions", h.Proxy)
+		r.Post("/v1/embeddings", h.Proxy)
+		r.Post("/v1/responses", h.Proxy)
+	})
+
+	port := config.GetEnv("PORT", "8000")
+	host := config.GetEnv("HOST", "0.0.0.0")
 	addr := host + ":" + port
 
 	srv := &http.Server{

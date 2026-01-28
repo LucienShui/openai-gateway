@@ -32,12 +32,68 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(h.cfg.ModelList)
+	err := json.NewEncoder(w).Encode(h.cfg.ModelList)
+	if err != nil {
+		http.Error(w, "encode models failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
+func (h *Handler) Stream(w http.ResponseWriter, url string, body []byte, apiKey string) {
+	upstreamReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "failed to create upstream request: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	upstreamReq.Header.Set("Content-Type", "application/json")
+	upstreamReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(upstreamReq)
+	if err != nil {
+		http.Error(w, "failed to connect to upstream: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			h.logger.Error(map[string]any{
+				"error": "body close failed",
+			})
+		}
+	}(resp.Body)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err != io.EOF {
+				http.Error(w, "failed to connect to upstream: "+err.Error(), http.StatusInternalServerError)
+			}
+			break
+		}
+		_, err = w.Write(line)
+		if err != nil {
+			http.Error(w, "streaming write error: "+err.Error(), http.StatusInternalServerError)
+		}
+		flusher.Flush()
+	}
+}
+
+func (h *Handler) Generate(w http.ResponseWriter, r *http.Request) {}
+
 func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
-	startTime := time.Now()
-	requestID := r.Header.Get("X-Request-Id")
 	path := r.URL.Path
 
 	body, err := io.ReadAll(r.Body)
@@ -45,7 +101,11 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 		h.errorResponse(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
-	r.Body.Close()
+	err = r.Body.Close()
+	if err != nil {
+		h.errorResponse(w, http.StatusInternalServerError, "failed to close request body")
+		return
+	}
 
 	var reqBody map[string]any
 	if err := json.Unmarshal(body, &reqBody); err != nil {
@@ -66,50 +126,14 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reqBody["model"] = route.Model
-	modifiedBody, _ := json.Marshal(reqBody)
-
+	upstreamBody, _ := json.Marshal(reqBody)
 	upstreamURL := route.Client.BuildURL(path)
-
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), "POST", upstreamURL, bytes.NewReader(modifiedBody))
-	if err != nil {
-		h.errorResponse(w, http.StatusInternalServerError, "failed to create upstream request")
-		return
-	}
-
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	if route.Client.IsAzure {
-		upstreamReq.Header.Set("api-key", route.Client.APIKey)
-	} else {
-		upstreamReq.Header.Set("Authorization", "Bearer "+route.Client.APIKey)
-	}
-
 	isStream, _ := reqBody["stream"].(bool)
 
-	resp, err := route.Client.HTTPClient.Do(upstreamReq)
-	if err != nil {
-		h.logger.Error(map[string]any{
-			"api":        path,
-			"error":      err.Error(),
-			"request_id": requestID,
-		})
-		h.errorResponse(w, http.StatusBadGateway, "upstream request failed")
-		return
-	}
-	defer resp.Body.Close()
-
-	for k, v := range resp.Header {
-		if k == "Content-Length" || k == "Transfer-Encoding" {
-			continue
-		}
-		for _, vv := range v {
-			w.Header().Add(k, vv)
-		}
-	}
-
 	if isStream {
-		h.handleStream(w, resp, path, reqBody, requestID, startTime)
+		h.Stream(w, upstreamURL, upstreamBody, route.Client.APIKey)
 	} else {
-		h.handleNonStream(w, resp, path, reqBody, requestID, startTime)
+		//
 	}
 }
 
