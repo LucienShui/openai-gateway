@@ -10,10 +10,10 @@ OpenAI-compatible LLM gateway that routes requests to multiple upstream provider
 
 ```bash
 # Build
-go build -o gateway ./cmd/gateway
+go build -o out ./cmd/gateway
 
 # Run (requires CONFIG and optionally API_KEYS env vars)
-CONFIG='{"default":[...]}' API_KEYS="key1,key2" ./gateway
+CONFIG='{"default":[...]}' API_KEYS="key1,key2" ./out
 
 # Docker build
 docker build -t openai-gateway .

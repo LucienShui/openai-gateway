@@ -164,3 +164,4 @@ cython_debug/
 logs
 compose.override.yaml
 .serena
+out

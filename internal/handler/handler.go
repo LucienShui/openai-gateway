@@ -3,6 +3,7 @@ package handler
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,8 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/LucienShui/openai-gateway/internal/config"
 	"github.com/LucienShui/openai-gateway/internal/logger"
+	"github.com/LucienShui/openai-gateway/internal/telemetry"
 )
 
 type Handler struct {
@@ -111,16 +115,19 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isStream {
-		h.handleStream(w, resp, path, reqBody, requestID, startTime)
+		h.handleStream(r.Context(), w, resp, path, reqBody, requestID, startTime)
 	} else {
-		h.handleNonStream(w, resp, path, reqBody, requestID, startTime)
+		h.handleNonStream(r.Context(), w, resp, path, reqBody, requestID, startTime)
 	}
 }
 
-func (h *Handler) handleStream(w http.ResponseWriter, resp *http.Response, path string, reqBody map[string]any, requestID string, startTime time.Time) {
+func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp *http.Response, path string, reqBody map[string]any, requestID string, startTime time.Time) {
+	ctx, span := telemetry.StartSpan(ctx, "stream")
+	defer span.End()
+
 	// If upstream returned an error, don't stream - return JSON response
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		h.handleNonStream(w, resp, path, reqBody, requestID, startTime)
+		h.handleNonStream(ctx, w, resp, path, reqBody, requestID, startTime)
 		return
 	}
 
@@ -176,9 +183,26 @@ func (h *Handler) handleStream(w http.ResponseWriter, resp *http.Response, path 
 		logEntry["reasoning_content"] = reasoningContent.String()
 	}
 	h.logger.Info(logEntry)
+
+	// Set span attributes
+	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
+	telemetry.SetSpanAttributes(span,
+		attribute.String("api", path),
+		attribute.String("request", string(reqJSON)),
+		attribute.String("response", responseContent.String()),
+	)
+	if requestID != "" {
+		telemetry.SetSpanAttributes(span, attribute.String("request_id", requestID))
+	}
+	if reasoningContent.Len() > 0 {
+		telemetry.SetSpanAttributes(span, attribute.String("reasoning_content", reasoningContent.String()))
+	}
 }
 
-func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, path string, reqBody map[string]any, requestID string, startTime time.Time) {
+func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, resp *http.Response, path string, reqBody map[string]any, requestID string, startTime time.Time) {
+	_, span := telemetry.StartSpan(ctx, "generate")
+	defer span.End()
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		h.logger.Warn(map[string]any{
 			"api":         path,
@@ -210,6 +234,18 @@ func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, pa
 		logEntry["request_id"] = requestID
 	}
 	h.logger.Info(logEntry)
+
+	// Set span attributes
+	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
+	respJSONBytes, _ := json.Marshal(excludeEmbedding(respJSON))
+	telemetry.SetSpanAttributes(span,
+		attribute.String("api", path),
+		attribute.String("request", string(reqJSON)),
+		attribute.String("response", string(respJSONBytes)),
+	)
+	if requestID != "" {
+		telemetry.SetSpanAttributes(span, attribute.String("request_id", requestID))
+	}
 }
 
 func (h *Handler) extractContent(data string, content, reasoning *strings.Builder) {

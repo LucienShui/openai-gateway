@@ -16,9 +16,17 @@ import (
 	"github.com/LucienShui/openai-gateway/internal/handler"
 	"github.com/LucienShui/openai-gateway/internal/logger"
 	"github.com/LucienShui/openai-gateway/internal/middleware"
+	"github.com/LucienShui/openai-gateway/internal/telemetry"
 )
 
 func main() {
+	ctx := context.Background()
+
+	shutdownTelemetry, err := telemetry.Init(ctx)
+	if err != nil {
+		log.Fatalf("failed to initialize telemetry: %v", err)
+	}
+
 	configJSON := os.Getenv("CONFIG")
 	apiKeys := os.Getenv("API_KEYS")
 
@@ -70,6 +78,10 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	if err := shutdownTelemetry(ctx); err != nil {
+		log.Printf("failed to shutdown telemetry: %v", err)
+	}
 
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("Server forced to shutdown: %v", err)
