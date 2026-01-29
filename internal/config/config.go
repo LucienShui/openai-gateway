@@ -172,7 +172,7 @@ func (u *UpstreamClient) BuildURL(path string) string {
 	if u.IsAzure {
 		return u.buildAzureURL(path)
 	}
-	return u.BaseURL + path
+	return u.BaseURL + strings.TrimPrefix(path, "/v1")
 }
 
 func (u *UpstreamClient) buildAzureURL(path string) string {

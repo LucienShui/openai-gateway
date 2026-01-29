@@ -45,7 +45,11 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 		h.errorResponse(w, http.StatusBadRequest, "failed to read request body")
 		return
 	}
-	r.Body.Close()
+	err = r.Body.Close()
+	if err != nil {
+		h.errorResponse(w, http.StatusBadRequest, "failed to close request body")
+		return
+	}
 
 	var reqBody map[string]any
 	if err := json.Unmarshal(body, &reqBody); err != nil {
@@ -114,6 +118,12 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStream(w http.ResponseWriter, resp *http.Response, path string, reqBody map[string]any, requestID string, startTime time.Time) {
+	// If upstream returned an error, don't stream - return JSON response
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		h.handleNonStream(w, resp, path, reqBody, requestID, startTime)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -169,6 +179,14 @@ func (h *Handler) handleStream(w http.ResponseWriter, resp *http.Response, path 
 }
 
 func (h *Handler) handleNonStream(w http.ResponseWriter, resp *http.Response, path string, reqBody map[string]any, requestID string, startTime time.Time) {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		h.logger.Warn(map[string]any{
+			"api":         path,
+			"status_code": resp.StatusCode,
+			"request_id":  requestID,
+		})
+	}
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		h.errorResponse(w, http.StatusBadGateway, "failed to read upstream response")
