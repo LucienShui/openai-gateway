@@ -6,13 +6,12 @@ services:
       - ${LOG_DIR:-${PWD}/logs}:/app/logs
       - /etc/localtime:/etc/localtime:ro
     ports:
-      - "${PORT:-8000}:${PORT:-8000}"
+      - "${PORT:-8000}:8000"
     restart: always
-    # entrypoint: [ "python3", "main.py" ]
     healthcheck:
-      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:${PORT:-8000}/health || exit 1" ]
+      test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1" ]
     environment:
-      PORT: "${PORT:-8000}"
+      PORT: "8000"
       WORKERS: "4"
       API_KEYS: "key1,key2"
       CONFIG: |
