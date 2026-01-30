@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"net/url"
 	"os"
 
 	"go.opentelemetry.io/otel"
@@ -46,11 +47,20 @@ func Init(ctx context.Context) (func(context.Context) error, error) {
 		return nil, err
 	}
 
-	exporter, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpoint(endpoint),
-		otlptracehttp.WithURLPath("/v1/traces"),
-		otlptracehttp.WithInsecure(),
-	)
+	// Parse the endpoint URL to extract host:port and determine if insecure
+	opts := []otlptracehttp.Option{}
+	parsedURL, err := url.Parse(endpoint)
+	if err == nil && parsedURL.Host != "" {
+		opts = append(opts, otlptracehttp.WithEndpoint(parsedURL.Host))
+		if parsedURL.Scheme == "http" {
+			opts = append(opts, otlptracehttp.WithInsecure())
+		}
+	} else {
+		// Fallback: treat as host:port directly
+		opts = append(opts, otlptracehttp.WithEndpoint(endpoint), otlptracehttp.WithInsecure())
+	}
+
+	exporter, err := otlptracehttp.New(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}
