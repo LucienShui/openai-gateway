@@ -148,6 +148,7 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 
 	var responseContent strings.Builder
 	var reasoningContent strings.Builder
+	var lastChunk string
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -166,6 +167,7 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 			if data == "[DONE]" {
 				continue
 			}
+			lastChunk = data
 			h.extractContent(data, &responseContent, &reasoningContent)
 		}
 	}
@@ -182,6 +184,9 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 	if reasoningContent.Len() > 0 {
 		logEntry["reasoning_content"] = reasoningContent.String()
 	}
+	if lastChunk != "" {
+		logEntry["chunk"] = lastChunk
+	}
 	h.logger.Info(logEntry)
 
 	// Set span attributes
@@ -196,6 +201,9 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 	}
 	if reasoningContent.Len() > 0 {
 		telemetry.SetSpanAttributes(span, attribute.String("reasoning_content", reasoningContent.String()))
+	}
+	if lastChunk != "" {
+		telemetry.SetSpanAttributes(span, attribute.String("chunk", lastChunk))
 	}
 }
 
