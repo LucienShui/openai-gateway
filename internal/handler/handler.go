@@ -176,17 +176,19 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 			}
 			lastChunk = data
 
-			// Check for error in stream chunk
-			if h.hasError(data) {
-				streamError = data
-				telemetry.SetSpanError(span, fmt.Sprintf("upstream stream error: %s", data))
-				h.logger.Error("upstream stream error",
-					zap.String("api", path),
-					zap.String("error_chunk", data),
-					zap.String("request_id", requestID),
-				)
-			} else {
-				h.extractContent(data, &responseContent, &reasoningContent)
+			// Parse chunk once for error checking and content extraction
+			if chunk, err := h.parseChunk(data); err == nil {
+				if _, hasError := chunk["error"].(map[string]any); hasError {
+					streamError = data
+					telemetry.SetSpanError(span, fmt.Sprintf("upstream stream error: %s", data))
+					h.logger.Error("upstream stream error",
+						zap.String("api", path),
+						zap.String("error_chunk", data),
+						zap.String("request_id", requestID),
+					)
+				} else {
+					h.extractContentFromChunk(chunk, &responseContent, &reasoningContent)
+				}
 			}
 		}
 	}
@@ -200,8 +202,10 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 		)
 	}
 
+	// Marshal request once for both logging and telemetry
+	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
+
 	if logger.IsDebug() {
-		reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
 		fields := []zap.Field{
 			zap.String("api", path),
 			zap.String("request", string(reqJSON)),
@@ -224,7 +228,6 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 	}
 
 	// Set span attributes
-	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
 	telemetry.SetSpanAttributes(span,
 		attribute.String("api", path),
 		attribute.String("request", string(reqJSON)),
@@ -270,12 +273,13 @@ func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, re
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
 
+	// Marshal once for both logging and telemetry
+	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
 	var respJSON map[string]any
 	_ = json.Unmarshal(respBody, &respJSON)
+	respJSONBytes, _ := json.Marshal(excludeEmbedding(respJSON))
 
 	if logger.IsDebug() {
-		reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
-		respJSONBytes, _ := json.Marshal(excludeEmbedding(respJSON))
 		fields := []zap.Field{
 			zap.String("api", path),
 			zap.String("request", string(reqJSON)),
@@ -289,8 +293,6 @@ func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, re
 	}
 
 	// Set span attributes
-	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
-	respJSONBytes, _ := json.Marshal(excludeEmbedding(respJSON))
 	telemetry.SetSpanAttributes(span,
 		attribute.String("api", path),
 		attribute.String("request", string(reqJSON)),
@@ -301,22 +303,13 @@ func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, re
 	}
 }
 
-func (h *Handler) hasError(data string) bool {
+func (h *Handler) parseChunk(data string) (map[string]any, error) {
 	var chunk map[string]any
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return false
-	}
-
-	_, ok := chunk["error"].(map[string]any)
-	return ok
+	err := json.Unmarshal([]byte(data), &chunk)
+	return chunk, err
 }
 
-func (h *Handler) extractContent(data string, content, reasoning *strings.Builder) {
-	var chunk map[string]any
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return
-	}
-
+func (h *Handler) extractContentFromChunk(chunk map[string]any, content, reasoning *strings.Builder) {
 	choices, ok := chunk["choices"].([]any)
 	if !ok || len(choices) == 0 {
 		return
