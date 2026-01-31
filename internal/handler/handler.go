@@ -20,19 +20,25 @@ import (
 )
 
 type Handler struct {
-	cfg    *config.Config
-	logger *zap.Logger
+	cfg       *config.Config
+	logger    *zap.Logger
+	startTime time.Time
 }
 
 func New(cfg *config.Config, log *zap.Logger) *Handler {
-	return &Handler{cfg: cfg, logger: log}
+	return &Handler{cfg: cfg, logger: log, startTime: time.Now()}
 }
 
 func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status": "ok",
+		"uptime": time.Since(h.startTime).String(),
 	})
+}
+
+func (h *Handler) NotFound(w http.ResponseWriter, r *http.Request) {
+	h.errorResponse(w, http.StatusNotFound, fmt.Sprintf("path not found: %s", r.URL.Path))
 }
 
 func (h *Handler) Models(w http.ResponseWriter, _ *http.Request) {

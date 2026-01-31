@@ -48,6 +48,8 @@ func main() {
 	r.Use(chimw.RealIP)
 	r.Use(corsMiddleware)
 
+	r.NotFound(h.NotFound)
+
 	r.Get("/health", h.Health)
 
 	r.Group(func(r chi.Router) {
