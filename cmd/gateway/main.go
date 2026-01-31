@@ -61,8 +61,10 @@ func main() {
 	addr := host + ":" + port
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: otelhttp.NewHandler(r, "openai-gateway"),
+		Addr: addr,
+		Handler: otelhttp.NewHandler(r, "openai-gateway", otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/health"
+		})),
 	}
 
 	go func() {

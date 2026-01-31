@@ -210,7 +210,7 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 }
 
 func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, resp *http.Response, path string, reqBody map[string]any, requestID string, startTime time.Time) {
-	_, span := telemetry.StartSpan(ctx, "generate")
+	_, span := telemetry.StartSpan(ctx, "sync")
 	defer span.End()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
