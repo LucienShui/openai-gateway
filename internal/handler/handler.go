@@ -155,6 +155,7 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 	var responseContent strings.Builder
 	var reasoningContent strings.Builder
 	var lastChunk string
+	var streamError string
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -174,7 +175,19 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 				continue
 			}
 			lastChunk = data
-			h.extractContent(data, &responseContent, &reasoningContent)
+
+			// Check for error in stream chunk
+			if h.hasError(data) {
+				streamError = data
+				telemetry.SetSpanError(span, fmt.Sprintf("upstream stream error: %s", data))
+				h.logger.Error("upstream stream error",
+					zap.String("api", path),
+					zap.String("error_chunk", data),
+					zap.String("request_id", requestID),
+				)
+			} else {
+				h.extractContent(data, &responseContent, &reasoningContent)
+			}
 		}
 	}
 
@@ -204,6 +217,9 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 		if lastChunk != "" {
 			fields = append(fields, zap.String("chunk", lastChunk))
 		}
+		if streamError != "" {
+			fields = append(fields, zap.String("stream_error", streamError))
+		}
 		h.logger.Debug("stream completed", fields...)
 	}
 
@@ -222,6 +238,9 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 	}
 	if lastChunk != "" {
 		telemetry.SetSpanAttributes(span, attribute.String("chunk", lastChunk))
+	}
+	if streamError != "" {
+		telemetry.SetSpanAttributes(span, attribute.String("stream_error", streamError))
 	}
 }
 
@@ -280,6 +299,16 @@ func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, re
 	if requestID != "" {
 		telemetry.SetSpanAttributes(span, attribute.String("request_id", requestID))
 	}
+}
+
+func (h *Handler) hasError(data string) bool {
+	var chunk map[string]any
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return false
+	}
+
+	_, ok := chunk["error"].(map[string]any)
+	return ok
 }
 
 func (h *Handler) extractContent(data string, content, reasoning *strings.Builder) {
