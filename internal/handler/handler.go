@@ -166,7 +166,14 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 			continue
 		}
 
-		_, _ = fmt.Fprintf(w, "%s\n\n", line)
+		if _, err := fmt.Fprintf(w, "%s\n\n", line); err != nil {
+			h.logger.Debug("client disconnected during stream",
+				zap.String("api", path),
+				zap.String("request_id", requestID),
+				zap.Error(err),
+			)
+			break
+		}
 		flusher.Flush()
 
 		if strings.HasPrefix(line, "data: ") {
@@ -271,7 +278,14 @@ func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, re
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(respBody)
+	if _, err := w.Write(respBody); err != nil {
+		h.logger.Debug("client disconnected during response",
+			zap.String("api", path),
+			zap.String("request_id", requestID),
+			zap.Error(err),
+		)
+		return
+	}
 
 	// Marshal once for both logging and telemetry
 	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
