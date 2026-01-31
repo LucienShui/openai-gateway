@@ -20,6 +20,7 @@ const (
 )
 
 var tracer trace.Tracer
+var enabled bool
 
 // Init initializes OpenTelemetry tracing if OTEL_EXPORTER_OTLP_ENDPOINT is set.
 // Returns a shutdown function that should be called on application exit.
@@ -72,6 +73,7 @@ func Init(ctx context.Context) (func(context.Context) error, error) {
 
 	otel.SetTracerProvider(tp)
 	tracer = tp.Tracer(tracerName)
+	enabled = true
 
 	return tp.Shutdown, nil
 }
@@ -92,4 +94,9 @@ func StartSpan(ctx context.Context, name string) (context.Context, trace.Span) {
 // SetSpanAttributes sets attributes on the current span.
 func SetSpanAttributes(span trace.Span, attrs ...attribute.KeyValue) {
 	span.SetAttributes(attrs...)
+}
+
+// Enabled returns true if tracing is enabled.
+func Enabled() bool {
+	return enabled
 }

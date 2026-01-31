@@ -187,7 +187,9 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 	if lastChunk != "" {
 		logEntry["chunk"] = lastChunk
 	}
-	h.logger.Info(logEntry)
+	if !telemetry.Enabled() {
+		h.logger.Info(logEntry)
+	}
 
 	// Set span attributes
 	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
@@ -241,7 +243,9 @@ func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, re
 	if requestID != "" {
 		logEntry["request_id"] = requestID
 	}
-	h.logger.Info(logEntry)
+	if !telemetry.Enabled() {
+		h.logger.Info(logEntry)
+	}
 
 	// Set span attributes
 	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
