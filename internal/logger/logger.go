@@ -1,48 +1,56 @@
 package logger
 
 import (
-	"encoding/json"
-	"io"
 	"os"
-	"sync"
-	"time"
+	"strings"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
-type Logger struct {
-	mu     sync.Mutex
-	writer io.Writer
-}
+var currentLevel zapcore.Level
 
-func New(writer io.Writer) *Logger {
-	if writer == nil {
-		writer = os.Stdout
-	}
-	return &Logger{writer: writer}
-}
-
-func (l *Logger) log(level string, data map[string]any) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	entry := make(map[string]any)
-	entry["timestamp"] = time.Now().Format(time.RFC3339)
-	entry["level"] = level
-	for k, v := range data {
-		entry[k] = v
+func New() *zap.Logger {
+	encoderConfig := zapcore.EncoderConfig{
+		TimeKey:        "timestamp",
+		LevelKey:       "level",
+		NameKey:        "logger",
+		CallerKey:      "caller",
+		MessageKey:     "msg",
+		StacktraceKey:  "stacktrace",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.CapitalLevelEncoder,
+		EncodeTime:     zapcore.RFC3339TimeEncoder,
+		EncodeDuration: zapcore.SecondsDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
 	}
 
-	b, _ := json.Marshal(entry)
-	l.writer.Write(append(b, '\n'))
+	currentLevel = parseLogLevel(os.Getenv("LOG_LEVEL"))
+
+	core := zapcore.NewCore(
+		zapcore.NewJSONEncoder(encoderConfig),
+		zapcore.AddSync(os.Stdout),
+		currentLevel,
+	)
+
+	return zap.New(core)
 }
 
-func (l *Logger) Info(data map[string]any) {
-	l.log("INFO", data)
+func IsDebug() bool {
+	return currentLevel == zapcore.DebugLevel
 }
 
-func (l *Logger) Error(data map[string]any) {
-	l.log("ERROR", data)
-}
-
-func (l *Logger) Warn(data map[string]any) {
-	l.log("WARN", data)
+func parseLogLevel(levelStr string) zapcore.Level {
+	switch strings.ToLower(levelStr) {
+	case "debug":
+		return zapcore.DebugLevel
+	case "info":
+		return zapcore.InfoLevel
+	case "warn", "warning":
+		return zapcore.WarnLevel
+	case "error":
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel
+	}
 }

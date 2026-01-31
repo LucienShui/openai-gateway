@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.uber.org/zap"
 
 	"github.com/LucienShui/openai-gateway/internal/config"
 	"github.com/LucienShui/openai-gateway/internal/logger"
@@ -20,10 +21,10 @@ import (
 
 type Handler struct {
 	cfg    *config.Config
-	logger *logger.Logger
+	logger *zap.Logger
 }
 
-func New(cfg *config.Config, log *logger.Logger) *Handler {
+func New(cfg *config.Config, log *zap.Logger) *Handler {
 	return &Handler{cfg: cfg, logger: log}
 }
 
@@ -95,11 +96,11 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := route.Client.HTTPClient.Do(upstreamReq)
 	if err != nil {
-		h.logger.Error(map[string]any{
-			"api":        path,
-			"error":      err.Error(),
-			"request_id": requestID,
-		})
+		h.logger.Error("upstream request failed",
+			zap.String("api", path),
+			zap.String("error", err.Error()),
+			zap.String("request_id", requestID),
+		)
 		h.errorResponse(w, http.StatusBadGateway, "upstream request failed")
 		return
 	}
@@ -138,11 +139,10 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		h.logger.Error(map[string]any{
-			"api":        path,
-			"error":      "streaming not supported",
-			"request_id": requestID,
-		})
+		h.logger.Error("streaming not supported",
+			zap.String("api", path),
+			zap.String("request_id", requestID),
+		)
 		return
 	}
 
@@ -172,23 +172,24 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 		}
 	}
 
-	logEntry := map[string]any{
-		"api":      path,
-		"request":  excludeEmbedding(reqBody),
-		"response": responseContent.String(),
-		"time":     time.Since(startTime).Seconds(),
-	}
-	if requestID != "" {
-		logEntry["request_id"] = requestID
-	}
-	if reasoningContent.Len() > 0 {
-		logEntry["reasoning_content"] = reasoningContent.String()
-	}
-	if lastChunk != "" {
-		logEntry["chunk"] = lastChunk
-	}
-	if !telemetry.Enabled() {
-		h.logger.Info(logEntry)
+	if logger.IsDebug() {
+		reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
+		fields := []zap.Field{
+			zap.String("api", path),
+			zap.String("request", string(reqJSON)),
+			zap.String("response", responseContent.String()),
+			zap.Float64("time", time.Since(startTime).Seconds()),
+		}
+		if requestID != "" {
+			fields = append(fields, zap.String("request_id", requestID))
+		}
+		if reasoningContent.Len() > 0 {
+			fields = append(fields, zap.String("reasoning_content", reasoningContent.String()))
+		}
+		if lastChunk != "" {
+			fields = append(fields, zap.String("chunk", lastChunk))
+		}
+		h.logger.Debug("stream completed", fields...)
 	}
 
 	// Set span attributes
@@ -210,15 +211,15 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 }
 
 func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, resp *http.Response, path string, reqBody map[string]any, requestID string, startTime time.Time) {
-	_, span := telemetry.StartSpan(ctx, "sync")
+	_, span := telemetry.StartSpan(ctx, path)
 	defer span.End()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		h.logger.Warn(map[string]any{
-			"api":         path,
-			"status_code": resp.StatusCode,
-			"request_id":  requestID,
-		})
+		h.logger.Warn("upstream returned error",
+			zap.String("api", path),
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("request_id", requestID),
+		)
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
@@ -234,17 +235,19 @@ func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, re
 	var respJSON map[string]any
 	json.Unmarshal(respBody, &respJSON)
 
-	logEntry := map[string]any{
-		"api":      path,
-		"request":  excludeEmbedding(reqBody),
-		"response": excludeEmbedding(respJSON),
-		"time":     time.Since(startTime).Seconds(),
-	}
-	if requestID != "" {
-		logEntry["request_id"] = requestID
-	}
-	if !telemetry.Enabled() {
-		h.logger.Info(logEntry)
+	if logger.IsDebug() {
+		reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
+		respJSONBytes, _ := json.Marshal(excludeEmbedding(respJSON))
+		fields := []zap.Field{
+			zap.String("api", path),
+			zap.String("request", string(reqJSON)),
+			zap.String("response", string(respJSONBytes)),
+			zap.Float64("time", time.Since(startTime).Seconds()),
+		}
+		if requestID != "" {
+			fields = append(fields, zap.String("request_id", requestID))
+		}
+		h.logger.Debug("request completed", fields...)
 	}
 
 	// Set span attributes

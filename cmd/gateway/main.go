@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -36,7 +37,9 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	appLogger := logger.New(os.Stdout)
+	appLogger := logger.New()
+	defer appLogger.Sync()
+
 	h := handler.New(cfg, appLogger)
 
 	r := chi.NewRouter()
@@ -69,7 +72,7 @@ func main() {
 
 	go func() {
 		log.Printf("Starting server on %s", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen: %v", err)
 		}
 	}()
