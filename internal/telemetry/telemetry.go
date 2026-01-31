@@ -7,7 +7,9 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
@@ -20,7 +22,6 @@ const (
 )
 
 var tracer trace.Tracer
-var enabled bool
 
 // Init initializes OpenTelemetry tracing if OTEL_EXPORTER_OTLP_ENDPOINT is set.
 // Returns a shutdown function that should be called on application exit.
@@ -36,11 +37,17 @@ func Init(ctx context.Context) (func(context.Context) error, error) {
 		env = "unknown"
 	}
 
+	version := os.Getenv("VERSION")
+	if version == "" {
+		version = "unknown"
+	}
+
 	res, err := resource.Merge(
 		resource.Default(),
 		resource.NewWithAttributes(
 			semconv.SchemaURL,
 			semconv.ServiceName(serviceName),
+			semconv.ServiceVersion(version),
 			semconv.DeploymentEnvironmentName(env),
 		),
 	)
@@ -48,8 +55,15 @@ func Init(ctx context.Context) (func(context.Context) error, error) {
 		return nil, err
 	}
 
+	// Set up propagator for distributed tracing
+	prop := propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	)
+	otel.SetTextMapPropagator(prop)
+
 	// Parse the endpoint URL to extract host:port and determine if insecure
-	opts := []otlptracehttp.Option{}
+	var opts []otlptracehttp.Option
 	parsedURL, err := url.Parse(endpoint)
 	if err == nil && parsedURL.Host != "" {
 		opts = append(opts, otlptracehttp.WithEndpoint(parsedURL.Host))
@@ -73,7 +87,6 @@ func Init(ctx context.Context) (func(context.Context) error, error) {
 
 	otel.SetTracerProvider(tp)
 	tracer = tp.Tracer(tracerName)
-	enabled = true
 
 	return tp.Shutdown, nil
 }
@@ -96,7 +109,13 @@ func SetSpanAttributes(span trace.Span, attrs ...attribute.KeyValue) {
 	span.SetAttributes(attrs...)
 }
 
-// Enabled returns true if tracing is enabled.
-func Enabled() bool {
-	return enabled
+// RecordError records an error on the span and sets the span status to Error.
+func RecordError(span trace.Span, err error, description string) {
+	span.RecordError(err)
+	span.SetStatus(codes.Error, description)
+}
+
+// SetSpanError sets the span status to Error with the given description.
+func SetSpanError(span trace.Span, description string) {
+	span.SetStatus(codes.Error, description)
 }

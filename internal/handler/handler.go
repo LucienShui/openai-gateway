@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.uber.org/zap"
 
 	"github.com/LucienShui/openai-gateway/internal/config"
 	"github.com/LucienShui/openai-gateway/internal/logger"
@@ -19,24 +20,30 @@ import (
 )
 
 type Handler struct {
-	cfg    *config.Config
-	logger *logger.Logger
+	cfg       *config.Config
+	logger    *zap.Logger
+	startTime time.Time
 }
 
-func New(cfg *config.Config, log *logger.Logger) *Handler {
-	return &Handler{cfg: cfg, logger: log}
+func New(cfg *config.Config, log *zap.Logger) *Handler {
+	return &Handler{cfg: cfg, logger: log, startTime: time.Now()}
 }
 
-func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status": "ok",
+		"uptime": time.Since(h.startTime).String(),
 	})
 }
 
-func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) NotFound(w http.ResponseWriter, r *http.Request) {
+	h.errorResponse(w, http.StatusNotFound, fmt.Sprintf("path not found: %s", r.URL.Path))
+}
+
+func (h *Handler) Models(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(h.cfg.ModelList)
+	_ = json.NewEncoder(w).Encode(h.cfg.ModelList)
 }
 
 func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
@@ -95,15 +102,15 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := route.Client.HTTPClient.Do(upstreamReq)
 	if err != nil {
-		h.logger.Error(map[string]any{
-			"api":        path,
-			"error":      err.Error(),
-			"request_id": requestID,
-		})
+		h.logger.Error("upstream request failed",
+			zap.String("api", path),
+			zap.String("error", err.Error()),
+			zap.String("request_id", requestID),
+		)
 		h.errorResponse(w, http.StatusBadGateway, "upstream request failed")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	for k, v := range resp.Header {
 		if k == "Content-Length" || k == "Transfer-Encoding" {
@@ -138,17 +145,17 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		h.logger.Error(map[string]any{
-			"api":        path,
-			"error":      "streaming not supported",
-			"request_id": requestID,
-		})
+		h.logger.Error("streaming not supported",
+			zap.String("api", path),
+			zap.String("request_id", requestID),
+		)
 		return
 	}
 
 	var responseContent strings.Builder
 	var reasoningContent strings.Builder
 	var lastChunk string
+	var streamError string
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -159,7 +166,14 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 			continue
 		}
 
-		fmt.Fprintf(w, "%s\n\n", line)
+		if _, err := fmt.Fprintf(w, "%s\n\n", line); err != nil {
+			h.logger.Debug("client disconnected during stream",
+				zap.String("api", path),
+				zap.String("request_id", requestID),
+				zap.Error(err),
+			)
+			break
+		}
 		flusher.Flush()
 
 		if strings.HasPrefix(line, "data: ") {
@@ -168,31 +182,59 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 				continue
 			}
 			lastChunk = data
-			h.extractContent(data, &responseContent, &reasoningContent)
+
+			// Parse chunk once for error checking and content extraction
+			if chunk, err := h.parseChunk(data); err == nil {
+				if _, hasError := chunk["error"].(map[string]any); hasError {
+					streamError = data
+					telemetry.SetSpanError(span, fmt.Sprintf("upstream stream error: %s", data))
+					h.logger.Error("upstream stream error",
+						zap.String("api", path),
+						zap.String("error_chunk", data),
+						zap.String("request_id", requestID),
+					)
+				} else {
+					h.extractContentFromChunk(chunk, &responseContent, &reasoningContent)
+				}
+			}
 		}
 	}
 
-	logEntry := map[string]any{
-		"api":      path,
-		"request":  excludeEmbedding(reqBody),
-		"response": responseContent.String(),
-		"time":     time.Since(startTime).Seconds(),
+	if err := scanner.Err(); err != nil {
+		telemetry.RecordError(span, err, "stream scan error")
+		h.logger.Error("stream scan error",
+			zap.String("api", path),
+			zap.Error(err),
+			zap.String("request_id", requestID),
+		)
 	}
-	if requestID != "" {
-		logEntry["request_id"] = requestID
-	}
-	if reasoningContent.Len() > 0 {
-		logEntry["reasoning_content"] = reasoningContent.String()
-	}
-	if lastChunk != "" {
-		logEntry["chunk"] = lastChunk
-	}
-	if !telemetry.Enabled() {
-		h.logger.Info(logEntry)
+
+	// Marshal request once for both logging and telemetry
+	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
+
+	if logger.IsDebug() {
+		fields := []zap.Field{
+			zap.String("api", path),
+			zap.String("request", string(reqJSON)),
+			zap.String("response", responseContent.String()),
+			zap.Float64("time", time.Since(startTime).Seconds()),
+		}
+		if requestID != "" {
+			fields = append(fields, zap.String("request_id", requestID))
+		}
+		if reasoningContent.Len() > 0 {
+			fields = append(fields, zap.String("reasoning_content", reasoningContent.String()))
+		}
+		if lastChunk != "" {
+			fields = append(fields, zap.String("chunk", lastChunk))
+		}
+		if streamError != "" {
+			fields = append(fields, zap.String("stream_error", streamError))
+		}
+		h.logger.Debug("stream completed", fields...)
 	}
 
 	// Set span attributes
-	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
 	telemetry.SetSpanAttributes(span,
 		attribute.String("api", path),
 		attribute.String("request", string(reqJSON)),
@@ -207,49 +249,64 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 	if lastChunk != "" {
 		telemetry.SetSpanAttributes(span, attribute.String("chunk", lastChunk))
 	}
+	if streamError != "" {
+		telemetry.SetSpanAttributes(span, attribute.String("stream_error", streamError))
+	}
 }
 
 func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, resp *http.Response, path string, reqBody map[string]any, requestID string, startTime time.Time) {
-	_, span := telemetry.StartSpan(ctx, "generate")
+	_, span := telemetry.StartSpan(ctx, path)
 	defer span.End()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		h.logger.Warn(map[string]any{
-			"api":         path,
-			"status_code": resp.StatusCode,
-			"request_id":  requestID,
-		})
-	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		telemetry.RecordError(span, err, "failed to read upstream response")
 		h.errorResponse(w, http.StatusBadGateway, "failed to read upstream response")
 		return
 	}
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		telemetry.SetSpanError(span, fmt.Sprintf("upstream error: %d", resp.StatusCode))
+		telemetry.SetSpanAttributes(span, attribute.String("error_response", string(respBody)))
+		h.logger.Warn("upstream returned error",
+			zap.String("api", path),
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response", string(respBody)),
+			zap.String("request_id", requestID),
+		)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	w.Write(respBody)
+	if _, err := w.Write(respBody); err != nil {
+		h.logger.Debug("client disconnected during response",
+			zap.String("api", path),
+			zap.String("request_id", requestID),
+			zap.Error(err),
+		)
+		return
+	}
 
+	// Marshal once for both logging and telemetry
+	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
 	var respJSON map[string]any
-	json.Unmarshal(respBody, &respJSON)
+	_ = json.Unmarshal(respBody, &respJSON)
+	respJSONBytes, _ := json.Marshal(excludeEmbedding(respJSON))
 
-	logEntry := map[string]any{
-		"api":      path,
-		"request":  excludeEmbedding(reqBody),
-		"response": excludeEmbedding(respJSON),
-		"time":     time.Since(startTime).Seconds(),
-	}
-	if requestID != "" {
-		logEntry["request_id"] = requestID
-	}
-	if !telemetry.Enabled() {
-		h.logger.Info(logEntry)
+	if logger.IsDebug() {
+		fields := []zap.Field{
+			zap.String("api", path),
+			zap.String("request", string(reqJSON)),
+			zap.String("response", string(respJSONBytes)),
+			zap.Float64("time", time.Since(startTime).Seconds()),
+		}
+		if requestID != "" {
+			fields = append(fields, zap.String("request_id", requestID))
+		}
+		h.logger.Debug("request completed", fields...)
 	}
 
 	// Set span attributes
-	reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
-	respJSONBytes, _ := json.Marshal(excludeEmbedding(respJSON))
 	telemetry.SetSpanAttributes(span,
 		attribute.String("api", path),
 		attribute.String("request", string(reqJSON)),
@@ -260,12 +317,13 @@ func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, re
 	}
 }
 
-func (h *Handler) extractContent(data string, content, reasoning *strings.Builder) {
+func (h *Handler) parseChunk(data string) (map[string]any, error) {
 	var chunk map[string]any
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-		return
-	}
+	err := json.Unmarshal([]byte(data), &chunk)
+	return chunk, err
+}
 
+func (h *Handler) extractContentFromChunk(chunk map[string]any, content, reasoning *strings.Builder) {
 	choices, ok := chunk["choices"].([]any)
 	if !ok || len(choices) == 0 {
 		return
@@ -293,7 +351,7 @@ func (h *Handler) extractContent(data string, content, reasoning *strings.Builde
 func (h *Handler) errorResponse(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"message": message,
 			"type":    "gateway_error",

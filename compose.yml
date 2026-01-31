@@ -11,8 +11,8 @@ services:
     healthcheck:
       test: [ "CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1" ]
     environment:
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       PORT: "8000"
-      WORKERS: "4"
       API_KEYS: "key1,key2"
       CONFIG: |
         {

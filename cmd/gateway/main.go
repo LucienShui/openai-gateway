@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/LucienShui/openai-gateway/internal/config"
 	"github.com/LucienShui/openai-gateway/internal/handler"
@@ -35,7 +37,9 @@ func main() {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
-	appLogger := logger.New(os.Stdout)
+	appLogger := logger.New()
+	defer func() { _ = appLogger.Sync() }()
+
 	h := handler.New(cfg, appLogger)
 
 	r := chi.NewRouter()
@@ -43,6 +47,8 @@ func main() {
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.RealIP)
 	r.Use(corsMiddleware)
+
+	r.NotFound(h.NotFound)
 
 	r.Get("/health", h.Health)
 
@@ -60,13 +66,15 @@ func main() {
 	addr := host + ":" + port
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: r,
+		Addr: addr,
+		Handler: otelhttp.NewHandler(r, "openai-gateway", otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/health"
+		})),
 	}
 
 	go func() {
 		log.Printf("Starting server on %s", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("listen: %v", err)
 		}
 	}()

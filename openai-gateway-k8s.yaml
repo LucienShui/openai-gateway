@@ -9,7 +9,6 @@ metadata:
   name: openai-gateway-config
   namespace: openai-gateway
 data:
-  WORKERS: "4"
   API_KEYS: "key1,key2"
   CONFIG: |
     {
