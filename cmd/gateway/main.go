@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/LucienShui/openai-gateway/internal/config"
 	"github.com/LucienShui/openai-gateway/internal/handler"
@@ -61,7 +62,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: r,
+		Handler: otelhttp.NewHandler(r, "openai-gateway"),
 	}
 
 	go func() {
