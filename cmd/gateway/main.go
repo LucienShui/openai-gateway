@@ -38,7 +38,7 @@ func main() {
 	}
 
 	appLogger := logger.New()
-	defer appLogger.Sync()
+	defer func() { _ = appLogger.Sync() }()
 
 	h := handler.New(cfg, appLogger)
 

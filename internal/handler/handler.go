@@ -28,16 +28,16 @@ func New(cfg *config.Config, log *zap.Logger) *Handler {
 	return &Handler{cfg: cfg, logger: log}
 }
 
-func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status": "ok",
 	})
 }
 
-func (h *Handler) Models(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Models(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(h.cfg.ModelList)
+	_ = json.NewEncoder(w).Encode(h.cfg.ModelList)
 }
 
 func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +104,7 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 		h.errorResponse(w, http.StatusBadGateway, "upstream request failed")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	for k, v := range resp.Header {
 		if k == "Content-Length" || k == "Transfer-Encoding" {
@@ -159,7 +159,7 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 			continue
 		}
 
-		fmt.Fprintf(w, "%s\n\n", line)
+		_, _ = fmt.Fprintf(w, "%s\n\n", line)
 		flusher.Flush()
 
 		if strings.HasPrefix(line, "data: ") {
@@ -170,6 +170,15 @@ func (h *Handler) handleStream(ctx context.Context, w http.ResponseWriter, resp 
 			lastChunk = data
 			h.extractContent(data, &responseContent, &reasoningContent)
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		telemetry.RecordError(span, err, "stream scan error")
+		h.logger.Error("stream scan error",
+			zap.String("api", path),
+			zap.Error(err),
+			zap.String("request_id", requestID),
+		)
 	}
 
 	if logger.IsDebug() {
@@ -214,26 +223,30 @@ func (h *Handler) handleNonStream(ctx context.Context, w http.ResponseWriter, re
 	_, span := telemetry.StartSpan(ctx, path)
 	defer span.End()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		h.logger.Warn("upstream returned error",
-			zap.String("api", path),
-			zap.Int("status_code", resp.StatusCode),
-			zap.String("request_id", requestID),
-		)
-	}
-
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		telemetry.RecordError(span, err, "failed to read upstream response")
 		h.errorResponse(w, http.StatusBadGateway, "failed to read upstream response")
 		return
 	}
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		telemetry.SetSpanError(span, fmt.Sprintf("upstream error: %d", resp.StatusCode))
+		telemetry.SetSpanAttributes(span, attribute.String("error_response", string(respBody)))
+		h.logger.Warn("upstream returned error",
+			zap.String("api", path),
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response", string(respBody)),
+			zap.String("request_id", requestID),
+		)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	w.Write(respBody)
+	_, _ = w.Write(respBody)
 
 	var respJSON map[string]any
-	json.Unmarshal(respBody, &respJSON)
+	_ = json.Unmarshal(respBody, &respJSON)
 
 	if logger.IsDebug() {
 		reqJSON, _ := json.Marshal(excludeEmbedding(reqBody))
@@ -296,7 +309,7 @@ func (h *Handler) extractContent(data string, content, reasoning *strings.Builde
 func (h *Handler) errorResponse(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"message": message,
 			"type":    "gateway_error",
