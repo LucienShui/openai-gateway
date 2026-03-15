@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"go.uber.org/zap"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/LucienShui/openai-gateway/internal/config"
@@ -40,7 +41,11 @@ func main() {
 	appLogger := logger.New()
 	defer func() { _ = appLogger.Sync() }()
 
-	h := handler.New(cfg, appLogger)
+	// Create API logger that writes to both console and file
+	apiLogger := logger.NewAPILogger(appLogger)
+	defer func() { _ = apiLogger.Sync() }()
+
+	h := handler.New(cfg, apiLogger)
 
 	r := chi.NewRouter()
 
@@ -73,29 +78,29 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("Starting server on %s", addr)
+		appLogger.Info("Starting server", zap.String("addr", addr))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("listen: %v", err)
+			appLogger.Fatal("listen", zap.Error(err))
 		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Shutting down server...")
+	appLogger.Info("Shutting down server...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := shutdownTelemetry(ctx); err != nil {
-		log.Printf("failed to shutdown telemetry: %v", err)
+		appLogger.Error("failed to shutdown telemetry", zap.Error(err))
 	}
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		appLogger.Fatal("Server forced to shutdown", zap.Error(err))
 	}
 
-	log.Println("Server exited")
+	appLogger.Info("Server exited")
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
