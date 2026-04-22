@@ -80,8 +80,24 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reqBody["model"] = route.Model
-	modifiedBody, _ := json.Marshal(reqBody)
+	// Build upstream body without mutating reqBody, so the original request
+	// is preserved for logging and telemetry.
+	upstreamBody := make(map[string]any)
+	for k, v := range reqBody {
+		upstreamBody[k] = v
+	}
+	upstreamBody["model"] = route.Model
+
+	isStream, _ := upstreamBody["stream"].(bool)
+	if isStream {
+		if so, ok := upstreamBody["stream_options"].(map[string]any); ok {
+			so["include_usage"] = true
+		} else {
+			upstreamBody["stream_options"] = map[string]any{"include_usage": true}
+		}
+	}
+
+	modifiedBody, _ := json.Marshal(upstreamBody)
 
 	upstreamURL := route.Client.BuildURL(path)
 
@@ -97,8 +113,6 @@ func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 	} else {
 		upstreamReq.Header.Set("Authorization", "Bearer "+route.Client.APIKey)
 	}
-
-	isStream, _ := reqBody["stream"].(bool)
 
 	resp, err := route.Client.HTTPClient.Do(upstreamReq)
 	if err != nil {
