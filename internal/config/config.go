@@ -69,55 +69,71 @@ func NewConfig(configJSON, apiKeys string) (*Config, error) {
 		cfg.TokenList = strings.Split(apiKeys, ",")
 	}
 
-	configFlatten := make(map[string]*RouteEntry)
+	aliases := make(map[string]string)
+	register := func(namespace, key string, entry *RouteEntry) error {
+		if _, exists := cfg.Map[key]; exists {
+			return fmt.Errorf("duplicate model name detected: %s", key)
+		}
+		cfg.Map[key] = entry
+		cfg.ModelList.Data = append(cfg.ModelList.Data, Model{
+			ID:      key,
+			Object:  "model",
+			Created: time.Now().Unix(),
+			OwnedBy: namespace,
+		})
+		return nil
+	}
 
 	for namespace, clientConfigs := range rawConfig {
 		for _, cc := range clientConfigs {
-			client := createClient(&cc)
-
 			if cc.Type == "alias" {
-				for aliasModel, targetKey := range cc.Alias {
-					key := getKey(namespace, aliasModel)
-					target, ok := configFlatten[targetKey]
-					if !ok {
-						return nil, fmt.Errorf("alias target not found: %s", targetKey)
-					}
-					entry := &RouteEntry{
-						Model:  target.Model,
-						Client: target.Client,
-					}
-					if _, exists := cfg.Map[key]; exists {
-						return nil, fmt.Errorf("duplicate model name detected: %s", key)
-					}
-					configFlatten[key] = entry
-					cfg.Map[key] = entry
-					cfg.ModelList.Data = append(cfg.ModelList.Data, Model{
-						ID:      key,
-						Object:  "model",
-						Created: time.Now().Unix(),
-						OwnedBy: namespace,
-					})
-				}
-			} else {
-				for _, model := range cc.Models {
+				for model, target := range cc.Alias {
 					key := getKey(namespace, model)
-					entry := &RouteEntry{
-						Model:  model,
-						Client: client,
+					// Reserve the alias ID before resolving its target.
+					if err := register(namespace, key, nil); err != nil {
+						return nil, err
 					}
-					if _, exists := cfg.Map[key]; exists {
-						return nil, fmt.Errorf("duplicate model name detected: %s", key)
-					}
-					configFlatten[key] = entry
-					cfg.Map[key] = entry
-					cfg.ModelList.Data = append(cfg.ModelList.Data, Model{
-						ID:      key,
-						Object:  "model",
-						Created: time.Now().Unix(),
-						OwnedBy: namespace,
-					})
+					aliases[key] = target
+				}
+				continue
+			}
+
+			client := createClient(&cc)
+			for _, model := range cc.Models {
+				if err := register(namespace, getKey(namespace, model), &RouteEntry{Model: model, Client: client}); err != nil {
+					return nil, err
 				}
 			}
+		}
+	}
+
+	resolving := make(map[string]bool)
+	var resolve func(key string) (*RouteEntry, error)
+	resolve = func(key string) (*RouteEntry, error) {
+		entry, exists := cfg.Map[key]
+		if !exists {
+			return nil, fmt.Errorf("alias target not found: %s", key)
+		}
+		if entry != nil {
+			return entry, nil
+		}
+		if resolving[key] {
+			return nil, fmt.Errorf("alias cycle detected: %s", key)
+		}
+
+		resolving[key] = true
+		entry, err := resolve(aliases[key])
+		if err != nil {
+			return nil, err
+		}
+		delete(resolving, key)
+		cfg.Map[key] = entry
+		return entry, nil
+	}
+
+	for key := range aliases {
+		if _, err := resolve(key); err != nil {
+			return nil, err
 		}
 	}
 
